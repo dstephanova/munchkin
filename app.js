@@ -225,7 +225,7 @@ function renderMeal() {
 
   const chatHTML = m.chat.map((c, i) => {
     if (c.role === "model") {
-      return `<div class="model-row"><span class="mini-cat">${catSVG({ label: "" })}</span><div class="msg model">${esc(c.text)}</div></div>`;
+      return `<div class="model-row"><span class="mini-cat">${catSVG({ label: "", head: true })}</span><div class="msg model">${esc(c.text)}</div></div>`;
     }
     const txt = c.text || "";
     const note = i === 0 && m.photo ? `<span class="photo-note">📷 photo sent</span>` : "";
@@ -252,9 +252,9 @@ function renderMeal() {
       ${SLOTS.map(([id, label]) => `<button class="chip" data-action="meal-slot" data-slot="${id}" aria-pressed="${m.slot === id}">${label}</button>`).join("")}
     </div>
     <section class="chat" aria-label="Chat with Munchkin">
-      ${firstTime && !state.sending ? `<div class="model-row"><span class="mini-cat">${catSVG({ label: "" })}</span><div class="msg model">${m.photo ? "Tap send and I'll guess what's on your plate. You can add notes first, like \"I only ate half\"." : "Tell me what you ate and roughly how much!"}</div></div>` : ""}
+      ${firstTime && !state.sending ? `<div class="model-row"><span class="mini-cat">${catSVG({ label: "", head: true })}</span><div class="msg model">${m.photo ? "Tap send and I'll guess what's on your plate. You can add notes first, like \"I only ate half\"." : "Tell me what you ate and roughly how much!"}</div></div>` : ""}
       ${chatHTML}
-      ${state.sending ? `<div class="model-row"><span class="mini-cat">${catSVG({ label: "" })}</span><div><div class="msg model thinking" aria-label="Munchkin is thinking"><i></i><i></i><i></i></div><div class="ai-status" id="ai-status"></div></div></div>` : ""}
+      ${state.sending ? `<div class="model-row"><span class="mini-cat">${catSVG({ label: "", head: true })}</span><div><div class="msg model thinking" aria-label="Munchkin is thinking"><i></i><i></i><i></i></div><div class="ai-status" id="ai-status"></div></div></div>` : ""}
       ${state.error ? `<div class="msg error">${esc(state.error.text)}
         <div class="btn-row" style="margin-top:8px">${state.error.retry ? `<button class="btn" data-action="retry">Try again</button>` : ""}${state.error.settings ? `<button class="btn ghost" data-action="settings">Open settings</button>` : ""}</div></div>` : ""}
     </section>
