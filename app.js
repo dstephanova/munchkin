@@ -75,8 +75,10 @@ function longDate(s) {
 // Shows Gemini's answer nicely: **bold** and "* " bullets.
 function pretty(text) {
   return esc(text)
+    .replace(/^#{1,6}\s+(.+)$/gm, "<strong>$1</strong>")
     .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
     .replace(/^\s*[*-]\s+/gm, "• ")
+    .replace(/(^|\s)\*([^*\n]+)\*(?=\s|[.,!?]|$)/g, "$1<em>$2</em>")
     .replace(/\n{3,}/g, "\n\n");
 }
 function esc(s) {
@@ -233,7 +235,10 @@ function renderMeal() {
   const chatHTML = m.chat.map((c, i) => {
     if (c.role === "model") {
       const src = (c.sources || []).length ? `<span class="sources">🔎 Checked: ${c.sources.map((x) => `<a href="${esc(x.uri)}" target="_blank" rel="noopener">${esc(x.title)}</a>`).join(", ")}</span>` : "";
-      return `<div class="model-row"><span class="mini-cat">${catSVG({ label: "", head: true })}</span><div class="msg model">${pretty(c.text)}${src}</div></div>`;
+      const isLast = i === m.chat.length - 1 && !state.sending;
+      const chips = isLast && (c.options || []).length
+        ? `<div class="quick-replies">${c.options.map((o) => `<button class="chip" data-action="quick" data-text="${esc(o)}">${esc(o)}</button>`).join("")}</div>` : "";
+      return `<div class="model-row"><span class="mini-cat">${catSVG({ label: "", head: true })}</span><div class="msg model">${pretty(c.text)}${src}</div></div>${chips}`;
     }
     const txt = c.text || "";
     const note = i === 0 && m.photo ? `<span class="photo-note">📷 photo sent</span>` : "";
@@ -251,7 +256,7 @@ function renderMeal() {
       <div class="btn-row"><button class="btn danger" data-action="delete">Delete</button><button class="btn ghost" data-action="cancel-delete">Keep it</button></div></div>` : ""}
     ${m.items.length ? `
     <section class="nutri">
-      <div class="row"><span class="kcal">${t.calories}<small> kcal</small></span></div>
+      <div class="row"><span class="kcal">${m.estimate ? "≈" : ""}${t.calories}<small> kcal</small></span>${m.estimate ? `<span class="estimate">estimate, pick your option below</span>` : ""}</div>
       ${macrosHTML(t)}
       <ul class="items">${m.items.map((it) => `<li><span>${esc(it.name)} <em>${esc(it.amount)}</em></span><span>${it.calories} kcal</span></li>`).join("")}</ul>
     </section>` : ""}
@@ -417,7 +422,8 @@ async function runAI() {
     const turns = m.chat.slice(-24);
     const res = await askAI(turns, m.chat.length <= 24 ? m.photo : null, { demo, onStatus: setAIStatus, meal: { name: m.name, items: m.items } });
     stopAIStatus();
-    m.chat.push({ role: "model", text: res.reply, sources: res.sources || [] });
+    m.chat.push({ role: "model", text: res.reply, sources: res.sources || [], options: res.options || [] });
+    m.estimate = !!res.estimate;
     if (res.countFailed) toast("Couldn't update the numbers this time. Send a message to try again.");
     m.name = res.name;
     m.items = res.items;
@@ -476,6 +482,8 @@ $app.addEventListener("click", async (ev) => {
     state.meal.slot = el.dataset.slot;
     render();
     if (!state.meal._draft) { try { await saveMeal(state.meal); toast(`Moved to ${SLOT_NAME[state.meal.slot].toLowerCase()}`); } catch { toast("Couldn't save that change."); } }
+  } else if (a === "quick") {
+    sendMessage(el.dataset.text);
   } else if (a === "retry") {
     runAI();
   } else if (a === "ask-delete") {

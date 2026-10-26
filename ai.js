@@ -25,25 +25,27 @@ export function hasKey() {
 }
 
 // Step 1: Munchkin chats normally (with Google Search) and the person sees this answer as written.
-const CHAT_RULES = `You are Munchkin, a friendly cat who helps people log food in a food diary app.
+const CHAT_RULES = `You are Munchkin, a friendly, helpful cat inside a food diary app. Answer like a knowledgeable nutrition assistant would in a normal chat.
 The person tells you or shows you what they ate, and may correct you afterwards.
-Work out what the food is, the portion, and the nutrition.
 
-- When they name a brand, shop, packaged product, restaurant or chain dish, use Google Search to find the real nutrition label and package size, and use those numbers (e.g. half of a 600 g pack = 300 g). Mention briefly that you checked.
-- For plain basic foods, use your own knowledge.
-- If the photo is a nutrition label, read it.
-- Reply in a few short, warm sentences: what it is and the portion you assumed. Then one short line per item with its amount, calories, and protein, carbs and fat in grams. End with the total calories.
-- If something important is unclear, ask ONE short question, but still give your best estimate.
-- When corrected, treat the correction as fact and give the full updated numbers.
-- If it isn't food, say so kindly.
-- Plain text only: no tables, no headings. Never lecture about diet.`;
+- Always reply in the same language the person writes in.
+- When they name a brand, shop, packaged product, restaurant or chain dish, ALWAYS use Google Search to find the real product, its nutrition per 100 g and its package size(s). If you can't find the exact product, say so honestly and use typical values.
+- If the portion or product variant is unclear (e.g. several package sizes), show the options with calories for each, and ask which one they had.
+- Give calories plus protein, carbs and fat. Ranges are fine when things are uncertain.
+- For plain basic foods, use your own knowledge. If the photo is a nutrition label, read it.
+- When corrected, treat the correction as fact and give the updated numbers.
+- If it isn't food, say so kindly. Never lecture about diet.
+- Use simple formatting: short paragraphs, "* " bullet lines and **bold** are fine; no tables.`;
 
-// Step 2: a quick, cheap model turns that answer into numbers for the calorie card.
+// Step 2: a quick, cheap model turns that answer into numbers for the calorie card, plus tap-answers.
 const EXTRACT_RULES = `You turn a food-diary chat into numbers. Read the chat below between a person and Munchkin (a food helper).
 Using Munchkin's LAST answer (and earlier messages for context), list the FULL meal the person ate with Munchkin's estimates.
-If a range is given, use the middle. If a macro is missing, estimate it sensibly. If nothing edible was eaten, return "items": [].
+- If a range or several options are given and the person hasn't chosen yet, use the middle / most typical one and set "estimate": true.
+- If a macro is missing, estimate it sensibly. If nothing edible was eaten, return "items": [].
+- "options": if Munchkin's last answer asks the person a question, give 2-4 very short tap-answers they could send back (max 30 characters each, in the person's language, e.g. "500 g pack", "1 kg pack", "About half"). Otherwise [].
+- "name": short meal name in the person's language, max 5 words.
 Reply with ONLY this JSON:
-{"name": "short meal name, max 5 words", "items": [{"name": "food item", "amount": "e.g. 300 g", "calories": 0, "protein": 0, "carbs": 0, "fat": 0}]}`;
+{"name": "", "estimate": false, "options": [], "items": [{"name": "food item", "amount": "e.g. 300 g", "calories": 0, "protein": 0, "carbs": 0, "fat": 0}]}`;
 
 function cleanJSON(text) {
   try { return JSON.parse(text); } catch {}
@@ -125,8 +127,8 @@ function thinkingFor(model) {
 }
 
 // One request to Gemini. Switches off options this model refuses (thinking, search, JSON) and tries again.
-async function callGemini(key, model, { system, contents, search = false, json = false, timeoutMs = 30000 }) {
-  const opts = { search, think: !!thinkingFor(model), json };
+async function callGemini(key, model, { system, contents, search = false, json = false, quick = false, timeoutMs = 30000 }) {
+  const opts = { search, think: quick && !!thinkingFor(model), json };
   for (let attempt = 0; attempt < 4; attempt++) {
     const generationConfig = { temperature: 0.4 };
     if (opts.think) generationConfig.thinkingConfig = thinkingFor(model);
@@ -215,11 +217,11 @@ async function fakeChat(turns, photo) {
       { name: "Margherita pizza", amount: "2 slices", calories: 540, protein: 22, carbs: 66, fat: 20 },
     ] } });
   }
-  return normalise({ reply: (photo ? "That looks like a chicken salad with a light dressing. " : "Sounds like a chicken salad! ") + "I guessed a normal bowl, so tell me if it was bigger or smaller.", meal: { name: "Chicken salad", items: [
+  return { estimate: true, options: ["Bigger bowl", "Smaller bowl", "Normal bowl"], ...normalise({ reply: (photo ? "That looks like a **chicken salad** with a light dressing. " : "Sounds like a chicken salad! ") + "I guessed a normal bowl. Was it bigger or smaller?", meal: { name: "Chicken salad", items: [
     { name: "Grilled chicken", amount: "120 g", calories: 198, protein: 37, carbs: 0, fat: 4 },
     { name: "Mixed leaves & veg", amount: "120 g", calories: 30, protein: 2, carbs: 6, fat: 0 },
     { name: "Olive oil dressing", amount: "1 tbsp", calories: 119, protein: 0, carbs: 0, fat: 14 },
-  ] } });
+  ] } }) };
 }
 
 // turns: [{role:"user"|"model", text}]; the photo goes with the first turn.
@@ -245,7 +247,7 @@ export async function askAI(turns, photoDataUrl, { demo = false, onStatus = () =
   for (const [model, search] of plan) {
     onStatus(`${search ? "Asking" : "Asking without search,"} ${model}…`);
     try {
-      chat = await callGemini(key, model, { system: CHAT_RULES, contents, search, timeoutMs: search ? 45000 : 30000 });
+      chat = await callGemini(key, model, { system: CHAT_RULES, contents, search, timeoutMs: search ? 60000 : 40000 });
       chatModel = model;
       break;
     } catch (e) {
@@ -266,11 +268,17 @@ export async function askAI(turns, photoDataUrl, { demo = false, onStatus = () =
   for (const model of [models.fast, chatModel]) {
     try {
       const r = await callGemini(key, model, {
-        system: EXTRACT_RULES, json: true, timeoutMs: 25000,
+        system: EXTRACT_RULES, json: true, quick: true, timeoutMs: 25000,
         contents: [{ role: "user", parts: [{ text: transcript + before }] }],
       });
       const parsed = cleanJSON(r.text);
-      if (parsed) { numbers = normalise({ reply, meal: parsed.meal || parsed }); break; }
+      if (parsed) {
+        const m = parsed.meal || parsed;
+        numbers = normalise({ reply, meal: m });
+        numbers.estimate = !!m.estimate;
+        numbers.options = (Array.isArray(m.options) ? m.options : []).map((o) => String(o).slice(0, 40)).filter(Boolean).slice(0, 4);
+        break;
+      }
       report.push(`${model} (numbers): came out jumbled`);
     } catch (e) {
       report.push(`${model} (numbers): ${e.message}`);
