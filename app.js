@@ -33,6 +33,23 @@ const state = {
 let store;
 let unsubDay = null;
 
+// Live "what is the AI doing" line with a seconds counter.
+let aiTicker = null;
+function setAIStatus(text) {
+  state.aiStatus = text;
+  if (!state.aiStart) state.aiStart = Date.now();
+  paintAIStatus();
+  if (!aiTicker) aiTicker = setInterval(paintAIStatus, 1000);
+}
+function paintAIStatus() {
+  const el = document.getElementById("ai-status");
+  if (el && state.aiStatus) el.textContent = `${state.aiStatus} ${Math.round((Date.now() - state.aiStart) / 1000)}s`;
+}
+function stopAIStatus() {
+  clearInterval(aiTicker); aiTicker = null;
+  state.aiStatus = ""; state.aiStart = 0;
+}
+
 // ---------- little helpers ----------
 function iso(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -237,7 +254,7 @@ function renderMeal() {
     <section class="chat" aria-label="Chat with Munchkin">
       ${firstTime && !state.sending ? `<div class="model-row"><span class="mini-cat">${catSVG({ label: "" })}</span><div class="msg model">${m.photo ? "Tap send and I'll guess what's on your plate. You can add notes first, like \"I only ate half\"." : "Tell me what you ate and roughly how much!"}</div></div>` : ""}
       ${chatHTML}
-      ${state.sending ? `<div class="model-row"><span class="mini-cat">${catSVG({ label: "" })}</span><div class="msg model thinking" aria-label="Munchkin is thinking"><i></i><i></i><i></i></div></div>` : ""}
+      ${state.sending ? `<div class="model-row"><span class="mini-cat">${catSVG({ label: "" })}</span><div><div class="msg model thinking" aria-label="Munchkin is thinking"><i></i><i></i><i></i></div><div class="ai-status" id="ai-status"></div></div></div>` : ""}
       ${state.error ? `<div class="msg error">${esc(state.error.text)}
         <div class="btn-row" style="margin-top:8px">${state.error.retry ? `<button class="btn" data-action="retry">Try again</button>` : ""}${state.error.settings ? `<button class="btn ghost" data-action="settings">Open settings</button>` : ""}</div></div>` : ""}
     </section>
@@ -277,6 +294,7 @@ function renderSettings() {
         <button class="btn ghost" data-action="toggle-key">${state.showKey ? "Hide" : "Show"}</button>
       </div>
       ${state.settingsStatus ? `<p class="status-line ${state.settingsStatus.ok ? "ok" : "bad"}">${esc(state.settingsStatus.text)}</p>` : ""}
+      ${state.settingsStatus?.live ? `<p class="ai-status" id="ai-status"></p>` : ""}
       <p>No key yet? <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Get a free one from Google AI Studio</a>, tap "Create API key", copy it, and paste it above.</p>
       <p>Your key stays on this device only. On a new phone, paste it again.</p>
     </section>
@@ -385,10 +403,12 @@ async function runAI() {
   }
   state.error = null;
   state.sending = true;
-  render(); scrollToEnd();
+  state.aiStart = Date.now(); state.aiStatus = "Thinking…";
+  render(); scrollToEnd(); setAIStatus("Thinking…");
   try {
     const turns = m.chat.slice(-24);
-    const res = await askAI(turns, m.chat.length <= 24 ? m.photo : null, { demo });
+    const res = await askAI(turns, m.chat.length <= 24 ? m.photo : null, { demo, onStatus: setAIStatus });
+    stopAIStatus();
     m.chat.push({ role: "model", text: res.reply, raw: JSON.stringify({ reply: res.reply, meal: { name: res.name, items: res.items } }) });
     m.name = res.name;
     m.items = res.items;
@@ -396,6 +416,7 @@ async function runAI() {
     if (state.meal === m) { render(); scrollToEnd(); }
     try { await saveMeal(m); } catch { toast("Couldn't save. It will retry when you're online."); }
   } catch (e) {
+    stopAIStatus();
     state.sending = false;
     if (state.meal !== m) return;
     state.error = {
@@ -467,19 +488,21 @@ $app.addEventListener("click", async (ev) => {
     s.models = {};
     saveAISettings(s);
     if (!key) { state.settingsStatus = { ok: false, text: "Key removed." }; render(); return; }
-    state.settingsStatus = { ok: true, text: "Checking your key… (this can take up to a minute)" }; render();
+    state.settingsStatus = { ok: true, text: "Checking your key… (this can take up to a minute)", live: true }; render();
+    setAIStatus("Starting…");
     try {
       if (!demo) {
-        const models = await pickGeminiModels(key);
+        const models = await pickGeminiModels(key, setAIStatus);
         s.models = { geminiSet: models }; saveAISettings(s);
       }
-      const t = await askAI([{ role: "user", text: "one medium apple" }], null, { demo });
+      const t = await askAI([{ role: "user", text: "one medium apple" }], null, { demo, onStatus: setAIStatus });
       const kcal = t.items.reduce((n, i) => n + i.calories, 0);
       const set = loadAISettings().models?.geminiSet;
       state.settingsStatus = { ok: true, text: `It works! Test guess: ${t.name}, ${kcal} kcal.${set ? ` Main model: ${set.main}, backup: ${set.lite}.` : ""}` };
     } catch (e) {
       state.settingsStatus = { ok: false, text: e.message };
     }
+    stopAIStatus();
     render();
   } else if (a === "signout") {
     await store.signOut();

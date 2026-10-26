@@ -84,18 +84,28 @@ function newestFirst(list) {
 
 // Finds the newest regular "flash" model and the newest "flash-lite" model this key can use.
 // Lite is the backup: lighter, faster and usually much less crowded.
-export async function pickGeminiModels(key) {
+const FALLBACK_MODELS = { main: "gemini-2.5-flash", lite: "gemini-2.5-flash-lite" };
+export async function pickGeminiModels(key, onStatus = () => {}) {
+  onStatus("Asking Google which models your key can use…");
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 15000);
   let res;
   try {
-    res = await fetch(`${GEMINI}/models?pageSize=200`, { headers: { "x-goog-api-key": key } });
+    res = await fetch(`${GEMINI}/models?pageSize=200`, { headers: { "x-goog-api-key": key }, signal: ctl.signal });
   } catch {
+    if (ctl.signal.aborted) {
+      onStatus("Google didn't list the models in time, using the usual ones…");
+      return { ...FALLBACK_MODELS };
+    }
     throw new AIError("network", "Couldn't reach Google. Check your internet and try again.");
+  } finally {
+    clearTimeout(timer);
   }
   if (res.status === 400 || res.status === 401 || res.status === 403) {
     throw new AIError("key", "Google says this key doesn't work. Copy it again from AI Studio and paste it here.");
   }
-  if (!res.ok) throw new AIError("other", `Google answered with an error (${res.status}). Try again in a minute.`);
-  const data = await res.json();
+  if (!res.ok) return { ...FALLBACK_MODELS };
+  const data = await res.json().catch(() => ({}));
   const names = (data.models || [])
     .filter((m) => (m.supportedGenerationMethods || []).includes("generateContent"))
     .map((m) => m.name.replace(/^models\//, ""));
@@ -105,7 +115,7 @@ export async function pickGeminiModels(key) {
     || newestFirst(names.filter((n) => /flash/.test(n) && !/lite/.test(n) && !/(image|tts|audio|live|embedding)/.test(n)))[0];
   const lite = newestFirst(stable.filter((n) => /lite/.test(n)))[0]
     || newestFirst(names.filter((n) => /flash-lite/.test(n) && !/(image|tts|audio|live|embedding)/.test(n)))[0];
-  if (!main && !lite) throw new AIError("other", "This key can't use any Gemini model that reads photos.");
+  if (!main && !lite) return { ...FALLBACK_MODELS };
   return { main: main || lite, lite: lite || main };
 }
 
@@ -183,7 +193,7 @@ async function fakeChat(turns, photo) {
 
 // turns: [{role:"user"|"model", text, raw?}]; photo is sent with the first turn.
 // Tries the main model, then the lighter backup model, so a busy Google server doesn't leave you stuck.
-export async function askAI(turns, photoDataUrl, { demo = false } = {}) {
+export async function askAI(turns, photoDataUrl, { demo = false, onStatus = () => {} } = {}) {
   if (demo) return fakeChat(turns, photoDataUrl);
   const s = loadAISettings();
   const key = s.keys?.[s.provider];
@@ -191,7 +201,7 @@ export async function askAI(turns, photoDataUrl, { demo = false } = {}) {
   if (s.provider !== "gemini") throw new AIError("other", "Only Gemini works right now.");
   let models = s.models?.geminiSet;
   const refresh = async () => {
-    models = await pickGeminiModels(key);
+    models = await pickGeminiModels(key, onStatus);
     s.models = { ...(s.models || {}), geminiSet: models };
     saveAISettings(s);
   };
@@ -201,6 +211,7 @@ export async function askAI(turns, photoDataUrl, { demo = false } = {}) {
   for (let i = 0; i < plan.length; i++) {
     const [model, timeout] = plan[i];
     if (i > 0 && plan[i - 1][0] === model) await wait(2000);
+    onStatus(i === 0 ? `Asking ${model}…` : `Main model busy, trying backup ${model}…`);
     try {
       return await geminiChat(key, model, turns, photoDataUrl, timeout);
     } catch (e) {

@@ -383,3 +383,4 @@ a { color: var(--accent-deep); font-weight: 700; }
   max-width: calc(100% - 32px);
   text-align: center;
 }
+.ai-status { color: var(--muted); font-size: .8rem; margin: 4px 0 0 4px; font-variant-numeric: tabular-nums; }
