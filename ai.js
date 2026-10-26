@@ -82,7 +82,7 @@ function versionScore(name) {
 export async function pickGeminiModel(key) {
   let res;
   try {
-    res = await fetch(`${GEMINI}/models?pageSize=200&key=${encodeURIComponent(key)}`);
+    res = await fetch(`${GEMINI}/models?pageSize=200`, { headers: { "x-goog-api-key": key } });
   } catch {
     throw new AIError("network", "Couldn't reach Google. Check your internet and try again.");
   }
@@ -118,9 +118,9 @@ async function geminiChat(key, model, turns, photoDataUrl) {
   });
   let res;
   try {
-    res = await fetch(`${GEMINI}/models/${model}:generateContent?key=${encodeURIComponent(key)}`, {
+    res = await fetch(`${GEMINI}/models/${model}:generateContent`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "x-goog-api-key": key },
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: INSTRUCTIONS }] },
         contents,
