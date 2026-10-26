@@ -118,8 +118,8 @@ export function catSVG({ size = "100%", label = "Munchkin the cat", head = false
   <!-- cat eyeliner: thick upper lid with a winged flick at the outer corner -->
   <path d="M53 108 C52 78 104 66 112 102 C104 80 64 80 53 108 Z" fill="${O}"/>
   <path d="M187 108 C188 78 136 66 128 102 C136 80 176 80 187 108 Z" fill="${O}"/>
-  <path d="M56 101 C42 97 30 86 22 70 C36 82 50 88 63 89 Z" fill="${O}"/>
-  <path d="M184 101 C198 97 210 86 218 70 C204 82 190 88 177 89 Z" fill="${O}"/>
+  <path d="M56 101 C50 99 45 95 42 88 C48 92 55 91 63 89 Z" fill="${O}"/>
+  <path d="M184 101 C190 99 195 95 198 88 C192 92 185 91 177 89 Z" fill="${O}"/>
   <ellipse cx="93" cy="99" rx="9.5" ry="10.5" fill="#fff"/>
   <ellipse cx="167" cy="99" rx="9.5" ry="10.5" fill="#fff"/>
   <circle cx="73" cy="124" r="4.2" fill="#fff"/>
