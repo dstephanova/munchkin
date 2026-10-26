@@ -72,6 +72,13 @@ function prettyDate(s) {
 function longDate(s) {
   return fromIso(s).toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" });
 }
+// Shows Gemini's answer nicely: **bold** and "* " bullets.
+function pretty(text) {
+  return esc(text)
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/^\s*[*-]\s+/gm, "• ")
+    .replace(/\n{3,}/g, "\n\n");
+}
 function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
@@ -226,7 +233,7 @@ function renderMeal() {
   const chatHTML = m.chat.map((c, i) => {
     if (c.role === "model") {
       const src = (c.sources || []).length ? `<span class="sources">🔎 Checked: ${c.sources.map((x) => `<a href="${esc(x.uri)}" target="_blank" rel="noopener">${esc(x.title)}</a>`).join(", ")}</span>` : "";
-      return `<div class="model-row"><span class="mini-cat">${catSVG({ label: "", head: true })}</span><div class="msg model">${esc(c.text)}${src}</div></div>`;
+      return `<div class="model-row"><span class="mini-cat">${catSVG({ label: "", head: true })}</span><div class="msg model">${pretty(c.text)}${src}</div></div>`;
     }
     const txt = c.text || "";
     const note = i === 0 && m.photo ? `<span class="photo-note">📷 photo sent</span>` : "";
@@ -408,9 +415,10 @@ async function runAI() {
   render(); scrollToEnd(); setAIStatus("Thinking…");
   try {
     const turns = m.chat.slice(-24);
-    const res = await askAI(turns, m.chat.length <= 24 ? m.photo : null, { demo, onStatus: setAIStatus });
+    const res = await askAI(turns, m.chat.length <= 24 ? m.photo : null, { demo, onStatus: setAIStatus, meal: { name: m.name, items: m.items } });
     stopAIStatus();
-    m.chat.push({ role: "model", text: res.reply, sources: res.sources || [], raw: JSON.stringify({ reply: res.reply, meal: { name: res.name, items: res.items } }) });
+    m.chat.push({ role: "model", text: res.reply, sources: res.sources || [] });
+    if (res.countFailed) toast("Couldn't update the numbers this time. Send a message to try again.");
     m.name = res.name;
     m.items = res.items;
     state.sending = false;

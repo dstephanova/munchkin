@@ -24,25 +24,26 @@ export function hasKey() {
   return !!(s.keys && s.keys[s.provider]);
 }
 
-const INSTRUCTIONS = `You are Munchkin, a friendly cat who helps people log food in a food diary app.
-The person shows you something they ate (a photo, a description, or both) and may correct you afterwards.
-Work out what the food is, estimate portion sizes, and estimate nutrition.
+// Step 1: Munchkin chats normally (with Google Search) and the person sees this answer as written.
+const CHAT_RULES = `You are Munchkin, a friendly cat who helps people log food in a food diary app.
+The person tells you or shows you what they ate, and may correct you afterwards.
+Work out what the food is, the portion, and the nutrition.
 
-Always reply with ONLY a JSON object, no other text, in exactly this shape:
-{"reply": "1-3 short, warm sentences: what you think it is and your main assumption about portion size. If something important is unclear, ask ONE short question.",
- "meal": {"name": "short meal name, max 5 words",
-          "items": [{"name": "food item", "amount": "e.g. 150 g, 1 slice, 1 cup", "calories": 0, "protein": 0, "carbs": 0, "fat": 0}]}}
+- When they name a brand, shop, packaged product, restaurant or chain dish, use Google Search to find the real nutrition label and package size, and use those numbers (e.g. half of a 600 g pack = 300 g). Mention briefly that you checked.
+- For plain basic foods, use your own knowledge.
+- If the photo is a nutrition label, read it.
+- Reply in a few short, warm sentences: what it is and the portion you assumed. Then one short line per item with its amount, calories, and protein, carbs and fat in grams. End with the total calories.
+- If something important is unclear, ask ONE short question, but still give your best estimate.
+- When corrected, treat the correction as fact and give the full updated numbers.
+- If it isn't food, say so kindly.
+- Plain text only: no tables, no headings. Never lecture about diet.`;
 
-Rules:
-- calories in kcal, protein/carbs/fat in grams, whole numbers.
-- List every item separately (e.g. bread, cheese, drink).
-- When the person corrects you, return the FULL updated meal, not only the change.
-- Use their corrections as facts (if they say 200 g, use 200 g).
-- If the photo is a nutrition label, read it, and use the per-portion values for the amount they had (ask if unknown).
-- If it is not food, say so kindly and return "items": [].
-- Be realistic, not perfect: these are estimates. Never lecture about diet.
-- You can search Google. When the person names a brand, shop, packaged product, restaurant or chain dish, SEARCH for its real nutrition label and package size and use those numbers (e.g. half of a 600 g pack = 300 g). Say briefly that you checked online. Don't search for plain basic foods like an apple or rice.
-- Even after searching, your final answer must be ONLY the JSON object.`;
+// Step 2: a quick, cheap model turns that answer into numbers for the calorie card.
+const EXTRACT_RULES = `You turn a food-diary chat into numbers. Read the chat below between a person and Munchkin (a food helper).
+Using Munchkin's LAST answer (and earlier messages for context), list the FULL meal the person ate with Munchkin's estimates.
+If a range is given, use the middle. If a macro is missing, estimate it sensibly. If nothing edible was eaten, return "items": [].
+Reply with ONLY this JSON:
+{"name": "short meal name, max 5 words", "items": [{"name": "food item", "amount": "e.g. 300 g", "calories": 0, "protein": 0, "carbs": 0, "fat": 0}]}`;
 
 function cleanJSON(text) {
   try { return JSON.parse(text); } catch {}
@@ -74,7 +75,6 @@ export class AIError extends Error {
 
 // ---------- Gemini ----------
 const GEMINI = "https://generativelanguage.googleapis.com/v1beta";
-const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function versionScore(name) {
   const m = name.match(/gemini-(\d+)(?:\.(\d+))?/);
@@ -84,9 +84,10 @@ function newestFirst(list) {
   return list.sort((a, b) => versionScore(b) - versionScore(a) || a.length - b.length);
 }
 
-// Picks which Gemini models to try, fastest first:
-// newest "lite" model, newest regular "flash", then the older, very reliable 2.5 models.
-const FALLBACK_MODELS = { order: ["gemini-2.5-flash-lite", "gemini-2.5-flash"] };
+// Google's always-current aliases, used if we can't read the model list.
+const FALLBACK_MODELS = { order: ["gemini-flash-lite-latest", "gemini-flash-latest"], fast: "gemini-flash-lite-latest" };
+
+// Which models to try for chatting (fastest first) and which one turns answers into numbers.
 export async function pickGeminiModels(key, onStatus = () => {}) {
   onStatus("Asking Google which models your key can use…");
   const ctl = new AbortController();
@@ -95,10 +96,7 @@ export async function pickGeminiModels(key, onStatus = () => {}) {
   try {
     res = await fetch(`${GEMINI}/models?pageSize=200`, { headers: { "x-goog-api-key": key }, signal: ctl.signal });
   } catch {
-    if (ctl.signal.aborted) {
-      onStatus("Google didn't list the models in time, using the usual ones…");
-      return { ...FALLBACK_MODELS };
-    }
+    if (ctl.signal.aborted) return { ...FALLBACK_MODELS };
     throw new AIError("network", "Couldn't reach Google. Check your internet and try again.");
   } finally {
     clearTimeout(timer);
@@ -115,9 +113,9 @@ export async function pickGeminiModels(key, onStatus = () => {}) {
   const stable = names.filter((n) => /^gemini-[\d.]+-flash/.test(n) && !odd.test(n));
   const lite = newestFirst(stable.filter((n) => /lite/.test(n)))[0];
   const main = newestFirst(stable.filter((n) => !/lite/.test(n)))[0];
-  const order = [lite, main, "gemini-2.5-flash-lite", "gemini-2.5-flash"]
-    .filter((n, i, a) => n && a.indexOf(n) === i && (names.length === 0 || names.includes(n)));
-  return order.length ? { order } : { ...FALLBACK_MODELS };
+  const order = [main, lite].filter(Boolean);
+  if (!order.length) return { ...FALLBACK_MODELS };
+  return { order, fast: lite || main };
 }
 
 function thinkingFor(model) {
@@ -126,25 +124,14 @@ function thinkingFor(model) {
   return null;
 }
 
-async function geminiChat(key, model, turns, photoDataUrl, timeoutMs) {
-  const contents = turns.map((t, i) => {
-    const parts = [];
-    if (i === 0 && photoDataUrl) {
-      const [head, b64] = photoDataUrl.split(",");
-      const mime = (head.match(/data:(.*?);/) || [])[1] || "image/jpeg";
-      parts.push({ inline_data: { mime_type: mime, data: b64 } });
-    }
-    parts.push({ text: t.role === "model" ? (t.raw || t.text) : (t.text || "Here's what I ate. What is it?") });
-    return { role: t.role === "model" ? "model" : "user", parts };
-  });
-
-  // Options we may have to switch off if this model doesn't support them.
-  const opts = { search: true, think: !!thinkingFor(model), json: false };
+// One request to Gemini. Switches off options this model refuses (thinking, search, JSON) and tries again.
+async function callGemini(key, model, { system, contents, search = false, json = false, timeoutMs = 30000 }) {
+  const opts = { search, think: !!thinkingFor(model), json };
   for (let attempt = 0; attempt < 4; attempt++) {
     const generationConfig = { temperature: 0.4 };
     if (opts.think) generationConfig.thinkingConfig = thinkingFor(model);
     if (opts.json) generationConfig.responseMimeType = "application/json";
-    const body = { systemInstruction: { parts: [{ text: INSTRUCTIONS }] }, contents, generationConfig };
+    const body = { systemInstruction: { parts: [{ text: system }] }, contents, generationConfig };
     if (opts.search) body.tools = [{ google_search: {} }];
 
     const ctl = new AbortController();
@@ -159,7 +146,7 @@ async function geminiChat(key, model, turns, photoDataUrl, timeoutMs) {
       });
       data = await res.json().catch(() => null);
     } catch {
-      if (ctl.signal.aborted) throw new AIError("busy", `Gemini took too long to answer (${model}).`);
+      if (ctl.signal.aborted) throw new AIError("busy", "too slow");
       throw new AIError("network", "Couldn't reach Google. Check your internet and try again.");
     } finally {
       clearTimeout(timer);
@@ -167,34 +154,49 @@ async function geminiChat(key, model, turns, photoDataUrl, timeoutMs) {
     const detail = data?.error?.message || "";
     if (res.status === 400) {
       if (opts.think && /think/i.test(detail)) { opts.think = false; continue; }
-      if (opts.search && /(tool|search|ground)/i.test(detail)) { opts.search = false; opts.json = true; continue; }
+      if (opts.search && /(tool|search|ground)/i.test(detail)) { opts.search = false; continue; }
+      if (opts.json && /(mime|json)/i.test(detail)) { opts.json = false; continue; }
     }
     if (res.status === 429) {
-      if (opts.search && /(search|ground)/i.test(detail)) { opts.search = false; opts.json = true; continue; }
-      throw new AIError("limit", `Gemini's free limit is used up for now (${model}).`);
+      if (opts.search && /(search|ground)/i.test(detail)) { opts.search = false; continue; }
+      throw new AIError("limit", "free limit used up");
     }
-    if ([500, 502, 503, 504].includes(res.status)) throw new AIError("busy", `Gemini is overloaded right now (${res.status}, ${model}).`);
-    if (res.status === 404 || /not found|not supported for generateContent/i.test(detail)) throw new AIError("model", `Model ${model} isn't available.`);
-    if (res.status === 400 || res.status === 401 || res.status === 403) {
-      if (/api key|permission|unauth/i.test(detail)) throw new AIError("key", "Your Gemini key stopped working. Paste a fresh one in Settings.");
-      throw new AIError("other", `Gemini couldn't read that: ${detail || res.status}`);
+    if (res.status === 402) throw new AIError("credit", "Your Gemini credit ran out. Top it up in AI Studio under Billing.");
+    if ([500, 502, 503, 504].includes(res.status)) throw new AIError("busy", `overloaded (${res.status})`);
+    if (res.status === 404 || /not found|not supported for generateContent/i.test(detail)) throw new AIError("model", "not available");
+    if (res.status === 401 || res.status === 403 || (res.status === 400 && /api key/i.test(detail))) {
+      throw new AIError("key", "Your Gemini key stopped working. Paste a fresh one in Settings.");
     }
-    if (!res.ok) throw new AIError("busy", `Gemini had a hiccup (${res.status}, ${model}).`);
+    if (!res.ok) throw new AIError("other", `error ${res.status}: ${detail.slice(0, 120)}`);
     const cand = data?.candidates?.[0];
-    if (!cand || cand.finishReason === "SAFETY") throw new AIError("other", "Gemini didn't want to answer that one. Try describing it in words.");
-    const text = (cand.content?.parts || []).filter((p) => !p.thought).map((p) => p.text || "").join("");
-    const parsed = cleanJSON(text);
-    if (!parsed) throw new AIError("busy", "Gemini's answer came out jumbled.");
-    const result = normalise(parsed);
-    const seen = new Set();
-    result.sources = (cand.groundingMetadata?.groundingChunks || [])
-      .map((c) => c.web)
-      .filter((w) => w && w.uri && !seen.has(w.title || w.uri) && seen.add(w.title || w.uri))
-      .slice(0, 3)
-      .map((w) => ({ title: String(w.title || "source").slice(0, 60), uri: String(w.uri) }));
-    return result;
+    if (!cand || cand.finishReason === "SAFETY") throw new AIError("other", "Gemini didn't want to answer that one");
+    const text = (cand.content?.parts || []).filter((p) => !p.thought).map((p) => p.text || "").join("").trim();
+    if (!text) throw new AIError("busy", "empty answer");
+    return { text, cand };
   }
-  throw new AIError("other", "Gemini couldn't handle this request.");
+  throw new AIError("other", "Gemini refused the request settings");
+}
+
+function sourcesOf(cand) {
+  const seen = new Set();
+  return (cand.groundingMetadata?.groundingChunks || [])
+    .map((c) => c.web)
+    .filter((w) => w && w.uri && !seen.has(w.title || w.uri) && seen.add(w.title || w.uri))
+    .slice(0, 3)
+    .map((w) => ({ title: String(w.title || "source").slice(0, 60), uri: String(w.uri) }));
+}
+
+function toContents(turns, photoDataUrl) {
+  return turns.map((t, i) => {
+    const parts = [];
+    if (i === 0 && photoDataUrl) {
+      const [head, b64] = photoDataUrl.split(",");
+      const mime = (head.match(/data:(.*?);/) || [])[1] || "image/jpeg";
+      parts.push({ inline_data: { mime_type: mime, data: b64 } });
+    }
+    parts.push({ text: t.text || (t.role === "model" ? "…" : "Here's what I ate. What is it?") });
+    return { role: t.role === "model" ? "model" : "user", parts };
+  });
 }
 
 // ---------- pretend AI for testing (?demo) ----------
@@ -220,37 +222,68 @@ async function fakeChat(turns, photo) {
   ] } });
 }
 
-// turns: [{role:"user"|"model", text, raw?}]; photo is sent with the first turn.
-// Tries the main model, then the lighter backup model, so a busy Google server doesn't leave you stuck.
-export async function askAI(turns, photoDataUrl, { demo = false, onStatus = () => {} } = {}) {
+// turns: [{role:"user"|"model", text}]; the photo goes with the first turn.
+// Step 1: chat with search (fastest model first). Step 2: turn the answer into numbers.
+export async function askAI(turns, photoDataUrl, { demo = false, onStatus = () => {}, meal = null } = {}) {
   if (demo) return fakeChat(turns, photoDataUrl);
   const s = loadAISettings();
   const key = s.keys?.[s.provider];
   if (!key) throw new AIError("nokey", "Add your Gemini key in Settings first.");
   if (s.provider !== "gemini") throw new AIError("other", "Only Gemini works right now.");
   let models = s.models?.geminiSet;
-  const refresh = async () => {
+  if (!models || !Array.isArray(models.order) || !models.fast) {
     models = await pickGeminiModels(key, onStatus);
     s.models = { ...(s.models || {}), geminiSet: models };
     saveAISettings(s);
-  };
-  if (!models || !Array.isArray(models.order)) await refresh();
-  let lastErr;
-  const tried = new Set();
-  for (let i = 0; i < models.order.length && i < 4; i++) {
-    const model = models.order[i];
-    if (tried.has(model)) continue;
-    tried.add(model);
-    onStatus(i === 0 ? `Asking ${model}…` : `That was slow, trying ${model}…`);
+  }
+
+  // Step 1
+  const report = [];
+  const contents = toContents(turns, photoDataUrl);
+  const plan = [...models.order.map((m) => [m, true]), [models.order[0], false]];
+  let chat = null, chatModel = null;
+  for (const [model, search] of plan) {
+    onStatus(`${search ? "Asking" : "Asking without search,"} ${model}…`);
     try {
-      return await geminiChat(key, model, turns, photoDataUrl, 30000);
+      chat = await callGemini(key, model, { system: CHAT_RULES, contents, search, timeoutMs: search ? 45000 : 30000 });
+      chatModel = model;
+      break;
     } catch (e) {
-      lastErr = e;
-      if (e.kind === "model" || e.kind === "busy" || e.kind === "limit") continue;
-      throw e;
+      report.push(`${model}${search ? "" : " (no search)"}: ${e.message}`);
+      if (e.kind === "key" || e.kind === "credit" || e.kind === "network") throw withReport(e, report);
     }
   }
-  throw new AIError(lastErr?.kind === "limit" ? "limit" : "busy",
-    (lastErr?.kind === "limit" ? "Gemini's free limit is used up for now. Try again later." : "Gemini is too busy right now. Try again in a minute.")
-    + ` (${lastErr?.message || ""})`);
+  if (!chat) throw withReport(new AIError("busy", "Gemini couldn't answer right now. Try again in a minute."), report);
+  const reply = chat.text;
+  const sources = sourcesOf(chat.cand);
+
+  // Step 2
+  onStatus("Counting the calories…");
+  const transcript = [...turns, { role: "model", text: reply }].slice(-12)
+    .map((t) => `${t.role === "model" ? "Munchkin" : "Person"}: ${t.text || "(sent a photo)"}`).join("\n\n");
+  const before = meal && meal.items?.length ? `\n\nPrevious numbers (may be outdated): ${JSON.stringify({ name: meal.name, items: meal.items })}` : "";
+  let numbers = null;
+  for (const model of [models.fast, chatModel]) {
+    try {
+      const r = await callGemini(key, model, {
+        system: EXTRACT_RULES, json: true, timeoutMs: 25000,
+        contents: [{ role: "user", parts: [{ text: transcript + before }] }],
+      });
+      const parsed = cleanJSON(r.text);
+      if (parsed) { numbers = normalise({ reply, meal: parsed.meal || parsed }); break; }
+      report.push(`${model} (numbers): came out jumbled`);
+    } catch (e) {
+      report.push(`${model} (numbers): ${e.message}`);
+    }
+  }
+  if (!numbers) {
+    // Keep the chat answer even if counting failed; the old numbers stay.
+    return { reply, sources, name: meal?.name || "Meal", items: meal?.items || [], countFailed: true };
+  }
+  return { ...numbers, reply, sources };
+}
+
+function withReport(e, report) {
+  if (report.length) e.message = `${e.message}\n\nWhat happened:\n• ${report.join("\n• ")}`;
+  return e;
 }
