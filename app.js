@@ -1,6 +1,6 @@
 import { catSVG } from "./cat.js";
 import { createStore } from "./store.js";
-import { askAI, hasKey, loadAISettings, saveAISettings, pickGeminiModel, PROVIDERS } from "./ai.js";
+import { askAI, hasKey, loadAISettings, saveAISettings, pickGeminiModels, PROVIDERS } from "./ai.js";
 
 const demo = new URLSearchParams(location.search).has("demo");
 const $app = document.getElementById("app");
@@ -464,15 +464,19 @@ $app.addEventListener("click", async (ev) => {
     const key = document.getElementById("gemini-key").value.trim();
     const s = loadAISettings();
     s.keys = { ...(s.keys || {}), gemini: key };
-    s.models = { ...(s.models || {}) };
-    delete s.models.gemini;
+    s.models = {};
     saveAISettings(s);
     if (!key) { state.settingsStatus = { ok: false, text: "Key removed." }; render(); return; }
-    state.settingsStatus = { ok: true, text: "Checking your key…" }; render();
+    state.settingsStatus = { ok: true, text: "Checking your key… (this can take up to a minute)" }; render();
     try {
-      const model = demo ? "demo-model" : await pickGeminiModel(key);
-      s.models.gemini = model; saveAISettings(s);
-      state.settingsStatus = { ok: true, text: `It works! Munchkin will use ${model}.` };
+      if (!demo) {
+        const models = await pickGeminiModels(key);
+        s.models = { geminiSet: models }; saveAISettings(s);
+      }
+      const t = await askAI([{ role: "user", text: "one medium apple" }], null, { demo });
+      const kcal = t.items.reduce((n, i) => n + i.calories, 0);
+      const set = loadAISettings().models?.geminiSet;
+      state.settingsStatus = { ok: true, text: `It works! Test guess: ${t.name}, ${kcal} kcal.${set ? ` Main model: ${set.main}, backup: ${set.lite}.` : ""}` };
     } catch (e) {
       state.settingsStatus = { ok: false, text: e.message };
     }

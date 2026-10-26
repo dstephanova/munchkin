@@ -1,27 +1,69 @@
-// Munchkin the cat, drawn as SVG so it stays crisp at any size.
-// Stage 1: one still pose. More poses arrive with the animation update.
+// Munchkin the cat: a chubby purple kitten with soft shading, outlines and big glossy eyes.
+// Drawn as SVG so it stays crisp at any size. More poses arrive with the animation update.
+let uid = 0;
 export function catSVG({ size = "100%", label = "Munchkin the cat" } = {}) {
+  const k = `c${uid++}`;
+  const O = "#3b2163"; // outline
   return `
-<svg viewBox="0 0 120 120" width="${size}" height="${size}" role="img" aria-label="${label}">
-  <g>
-    <path d="M20 54 L28 14 Q30 9 34 13 L54 34 Z" fill="#9b6bff"/>
-    <path d="M100 54 L92 14 Q90 9 86 13 L66 34 Z" fill="#9b6bff"/>
-    <path d="M27 44 L31 22 L45 35 Z" fill="#ffb3d1"/>
-    <path d="M93 44 L89 22 L75 35 Z" fill="#ffb3d1"/>
-    <ellipse cx="60" cy="68" rx="46" ry="40" fill="#9b6bff"/>
-    <path d="M52 32 q2 7 0 12 M60 30 q0 8 0 13 M68 32 q-2 7 0 12" stroke="#7d4ee8" stroke-width="3.2" fill="none" stroke-linecap="round"/>
-    <ellipse cx="60" cy="86" rx="24" ry="17" fill="#c3a3ff"/>
-    <ellipse cx="33" cy="80" rx="8" ry="4.5" fill="#ff8fbf" opacity=".65"/>
-    <ellipse cx="87" cy="80" rx="8" ry="4.5" fill="#ff8fbf" opacity=".65"/>
-    <ellipse cx="44" cy="64" rx="7.5" ry="9.5" fill="#2b1d44"/>
-    <ellipse cx="76" cy="64" rx="7.5" ry="9.5" fill="#2b1d44"/>
-    <circle cx="46.5" cy="60" r="3" fill="#fff"/>
-    <circle cx="78.5" cy="60" r="3" fill="#fff"/>
-    <circle cx="42" cy="68" r="1.4" fill="#fff"/>
-    <circle cx="74" cy="68" r="1.4" fill="#fff"/>
-    <path d="M56.5 76 h7 q1.5 0 .5 1.6 l-3 3 q-1 1-2 0 l-3-3 q-1-1.6.5-1.6z" fill="#ff6fa8"/>
-    <path d="M52 84 q4 4.5 8 0 q4 4.5 8 0" stroke="#2b1d44" stroke-width="2.2" fill="none" stroke-linecap="round"/>
-    <path d="M14 74 l18 3 M13 83 l19-1 M106 74 l-18 3 M107 83 l-19-1" stroke="#6b3fd9" stroke-width="1.8" stroke-linecap="round" opacity=".7"/>
+<svg viewBox="0 0 200 220" width="${size}" height="${size}" ${label ? `role="img" aria-label="${label}"` : `aria-hidden="true"`}>
+  <defs>
+    <radialGradient id="${k}b" cx="42%" cy="35%" r="70%">
+      <stop offset="0" stop-color="#c3a2ff"/><stop offset=".6" stop-color="#9a6af5"/><stop offset="1" stop-color="#7647d8"/>
+    </radialGradient>
+    <radialGradient id="${k}m" cx="50%" cy="35%" r="70%">
+      <stop offset="0" stop-color="#fbf6ff"/><stop offset="1" stop-color="#ddc9ff"/>
+    </radialGradient>
+    <radialGradient id="${k}e" cx="50%" cy="40%" r="60%">
+      <stop offset="0" stop-color="#3a2a78"/><stop offset="1" stop-color="#160f33"/>
+    </radialGradient>
+    <linearGradient id="${k}i" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffd27a"/><stop offset="1" stop-color="#f29a3c"/>
+    </linearGradient>
+    <linearGradient id="${k}p" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ff9fc6"/><stop offset="1" stop-color="#f06aa3"/>
+    </linearGradient>
+  </defs>
+  <g stroke="${O}" stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round">
+    <!-- tail -->
+    <path d="M150 182 C186 178 192 140 172 126 C166 122 160 128 165 134 C176 146 170 166 146 168 Z" fill="url(#${k}b)"/>
+    <!-- body -->
+    <path d="M52 168 C48 130 70 112 100 112 C130 112 152 130 148 168 C146 196 126 206 100 206 C74 206 54 196 52 168 Z" fill="url(#${k}b)"/>
+    <ellipse cx="100" cy="168" rx="30" ry="30" fill="url(#${k}m)" stroke="none"/>
+    <path d="M86 156 q6 5 0 10 M114 156 q-6 5 0 10 M92 178 q8 4 16 0" fill="none" stroke="#c9b0f5" stroke-width="2.4"/>
+    <!-- feet -->
+    <ellipse cx="74" cy="205" rx="20" ry="11" fill="#b28cff"/>
+    <ellipse cx="126" cy="205" rx="20" ry="11" fill="#b28cff"/>
+    <path d="M68 200 v7 M77 199 v8 M120 200 v7 M129 199 v8" fill="none" stroke="#7a52cf" stroke-width="2"/>
+    <!-- arms -->
+    <path d="M58 140 C46 150 46 168 58 172 C66 170 66 152 62 144 Z" fill="url(#${k}b)"/>
+    <path d="M142 140 C154 150 154 168 142 172 C134 170 134 152 138 144 Z" fill="url(#${k}b)"/>
+    <!-- bib -->
+    <path d="M68 124 C84 138 116 138 132 124 C130 144 117 158 100 158 C83 158 70 144 68 124 Z" fill="url(#${k}p)"/>
+    <path d="M100 141 c-3-4-9-2-8 3 c1 4 8 8 8 8 s7-4 8-8 c1-5-5-7-8-3z" fill="#fff" stroke="none"/>
+    <!-- ears -->
+    <path d="M38 70 C34 44 40 22 50 16 C60 18 76 34 84 46 Z" fill="url(#${k}b)"/>
+    <path d="M162 70 C166 44 160 22 150 16 C140 18 124 34 116 46 Z" fill="url(#${k}b)"/>
+    <path d="M48 56 C46 42 49 30 53 26 C59 30 68 38 72 46 Z" fill="#ffb3d3" stroke="none"/>
+    <path d="M152 56 C154 42 151 30 147 26 C141 30 132 38 128 46 Z" fill="#ffb3d3" stroke="none"/>
+    <!-- head -->
+    <path d="M100 30 C150 30 176 58 176 88 C176 118 148 132 100 132 C52 132 24 118 24 88 C24 58 50 30 100 30 Z" fill="url(#${k}b)"/>
+    <path d="M86 36 q4 10 0 18 M100 33 q0 11 0 20 M114 36 q-4 10 0 18" fill="none" stroke="#7445d4" stroke-width="3.6"/>
+    <!-- muzzle -->
+    <ellipse cx="100" cy="108" rx="34" ry="21" fill="url(#${k}m)" stroke="none"/>
+    <!-- eyes -->
+    <ellipse cx="68" cy="86" rx="20" ry="23" fill="url(#${k}i)"/>
+    <ellipse cx="132" cy="86" rx="20" ry="23" fill="url(#${k}i)"/>
+    <ellipse cx="69" cy="88" rx="15" ry="18" fill="url(#${k}e)" stroke="none"/>
+    <ellipse cx="131" cy="88" rx="15" ry="18" fill="url(#${k}e)" stroke="none"/>
   </g>
+  <circle cx="75" cy="78" r="6.5" fill="#fff"/>
+  <circle cx="137" cy="78" r="6.5" fill="#fff"/>
+  <circle cx="63" cy="96" r="2.8" fill="#fff" opacity=".9"/>
+  <circle cx="125" cy="96" r="2.8" fill="#fff" opacity=".9"/>
+  <ellipse cx="46" cy="106" rx="11" ry="6" fill="#ff8fbf" opacity=".55"/>
+  <ellipse cx="154" cy="106" rx="11" ry="6" fill="#ff8fbf" opacity=".55"/>
+  <path d="M94 101 h12 q3 0 1 3 l-5 5 q-2 2-4 0 l-5-5 q-2-3 1-3z" fill="#ff6fa8" stroke="${O}" stroke-width="2"/>
+  <path d="M88 114 q6 6 12 0 q6 6 12 0" fill="none" stroke="${O}" stroke-width="2.8" stroke-linecap="round"/>
+  <path d="M30 100 l22 4 M28 112 l23-1 M170 100 l-22 4 M172 112 l-23-1" stroke="${O}" stroke-width="2" stroke-linecap="round" opacity=".55"/>
 </svg>`;
 }

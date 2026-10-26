@@ -72,14 +72,19 @@ export class AIError extends Error {
 
 // ---------- Gemini ----------
 const GEMINI = "https://generativelanguage.googleapis.com/v1beta";
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function versionScore(name) {
   const m = name.match(/gemini-(\d+)(?:\.(\d+))?/);
   return m ? Number(m[1]) * 100 + Number(m[2] || 0) : 0;
 }
+function newestFirst(list) {
+  return list.sort((a, b) => versionScore(b) - versionScore(a) || a.length - b.length);
+}
 
-// Picks the newest regular "flash" model this key can use, so the app keeps working as Google renames models.
-export async function pickGeminiModel(key) {
+// Finds the newest regular "flash" model and the newest "flash-lite" model this key can use.
+// Lite is the backup: lighter, faster and usually much less crowded.
+export async function pickGeminiModels(key) {
   let res;
   try {
     res = await fetch(`${GEMINI}/models?pageSize=200`, { headers: { "x-goog-api-key": key } });
@@ -94,18 +99,17 @@ export async function pickGeminiModel(key) {
   const names = (data.models || [])
     .filter((m) => (m.supportedGenerationMethods || []).includes("generateContent"))
     .map((m) => m.name.replace(/^models\//, ""));
-  const bad = /(lite|preview|exp|image|tts|audio|live|thinking|embedding|vision|8b|latest)/;
-  const flash = names.filter((n) => /^gemini-[\d.]+-flash/.test(n) && !bad.test(n));
-  flash.sort((a, b) => versionScore(b) - versionScore(a) || a.length - b.length);
-  if (flash[0]) return flash[0];
-  const anyFlash = names.filter((n) => n.includes("flash") && !/(image|tts|audio|live|embedding)/.test(n));
-  anyFlash.sort((a, b) => versionScore(b) - versionScore(a));
-  if (anyFlash[0]) return anyFlash[0];
-  if (names[0]) return names[0];
-  throw new AIError("other", "This key can't use any Gemini model that reads photos.");
+  const odd = /(preview|exp|image|tts|audio|live|thinking|embedding|vision|8b|latest|native|computer|robotics)/;
+  const stable = names.filter((n) => /^gemini-[\d.]+-flash/.test(n) && !odd.test(n));
+  const main = newestFirst(stable.filter((n) => !/lite/.test(n)))[0]
+    || newestFirst(names.filter((n) => /flash/.test(n) && !/lite/.test(n) && !/(image|tts|audio|live|embedding)/.test(n)))[0];
+  const lite = newestFirst(stable.filter((n) => /lite/.test(n)))[0]
+    || newestFirst(names.filter((n) => /flash-lite/.test(n) && !/(image|tts|audio|live|embedding)/.test(n)))[0];
+  if (!main && !lite) throw new AIError("other", "This key can't use any Gemini model that reads photos.");
+  return { main: main || lite, lite: lite || main };
 }
 
-async function geminiChat(key, model, turns, photoDataUrl) {
+async function geminiChat(key, model, turns, photoDataUrl, timeoutMs) {
   const contents = turns.map((t, i) => {
     const parts = [];
     if (i === 0 && photoDataUrl) {
@@ -116,10 +120,13 @@ async function geminiChat(key, model, turns, photoDataUrl) {
     parts.push({ text: t.role === "model" ? (t.raw || t.text) : (t.text || "Here's what I ate. What is it?") });
     return { role: t.role === "model" ? "model" : "user", parts };
   });
-  let res;
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  let res, data;
   try {
     res = await fetch(`${GEMINI}/models/${model}:generateContent`, {
       method: "POST",
+      signal: ctl.signal,
       headers: { "Content-Type": "application/json", "x-goog-api-key": key },
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: INSTRUCTIONS }] },
@@ -127,25 +134,27 @@ async function geminiChat(key, model, turns, photoDataUrl) {
         generationConfig: { responseMimeType: "application/json", temperature: 0.4 },
       }),
     });
-  } catch {
+    data = await res.json().catch(() => null);
+  } catch (e) {
+    if (ctl.signal.aborted) throw new AIError("busy", `Gemini took too long to answer (${model}).`);
     throw new AIError("network", "Couldn't reach Google. Check your internet and try again.");
+  } finally {
+    clearTimeout(timer);
   }
-  if (res.status === 429) throw new AIError("limit", "You've hit Gemini's free limit for now. Try again in a little while.");
+  const detail = data?.error?.message || "";
+  if (res.status === 429) throw new AIError("limit", `Gemini's free limit is used up for now (${model}).`);
+  if ([500, 502, 503, 504].includes(res.status)) throw new AIError("busy", `Gemini is overloaded right now (${res.status}, ${model}).`);
+  if (res.status === 404 || /not found|not supported/i.test(detail)) throw new AIError("model", `Model ${model} isn't available.`);
   if (res.status === 400 || res.status === 401 || res.status === 403) {
-    let detail = "";
-    try { detail = (await res.json()).error?.message || ""; } catch {}
-    if (/api key/i.test(detail)) throw new AIError("key", "Your Gemini key stopped working. Paste a fresh one in Settings.");
-    if (res.status === 404 || /not found|not supported/i.test(detail)) throw new AIError("model", "model");
-    throw new AIError("other", "Gemini couldn't read that. Try a clearer photo or describe it in words.");
+    if (/api key|permission|unauth/i.test(detail)) throw new AIError("key", "Your Gemini key stopped working. Paste a fresh one in Settings.");
+    throw new AIError("other", `Gemini couldn't read that: ${detail || res.status}`);
   }
-  if (res.status === 404) throw new AIError("model", "model");
-  if (!res.ok) throw new AIError("other", `Gemini had a hiccup (${res.status}). Try again in a minute.`);
-  const data = await res.json();
-  const cand = data.candidates?.[0];
+  if (!res.ok) throw new AIError("busy", `Gemini had a hiccup (${res.status}, ${model}).`);
+  const cand = data?.candidates?.[0];
   if (!cand || cand.finishReason === "SAFETY") throw new AIError("other", "Gemini didn't want to answer that one. Try describing it in words.");
   const text = (cand.content?.parts || []).filter((p) => !p.thought).map((p) => p.text || "").join("");
   const parsed = cleanJSON(text);
-  if (!parsed) throw new AIError("other", "Gemini's answer came out jumbled. Tap send again.");
+  if (!parsed) throw new AIError("busy", "Gemini's answer came out jumbled.");
   return normalise(parsed);
 }
 
@@ -173,26 +182,34 @@ async function fakeChat(turns, photo) {
 }
 
 // turns: [{role:"user"|"model", text, raw?}]; photo is sent with the first turn.
+// Tries the main model, then the lighter backup model, so a busy Google server doesn't leave you stuck.
 export async function askAI(turns, photoDataUrl, { demo = false } = {}) {
   if (demo) return fakeChat(turns, photoDataUrl);
   const s = loadAISettings();
   const key = s.keys?.[s.provider];
   if (!key) throw new AIError("nokey", "Add your Gemini key in Settings first.");
   if (s.provider !== "gemini") throw new AIError("other", "Only Gemini works right now.");
-  let model = s.models?.gemini;
-  if (!model) {
-    model = await pickGeminiModel(key);
-    s.models = { ...(s.models || {}), gemini: model };
+  let models = s.models?.geminiSet;
+  const refresh = async () => {
+    models = await pickGeminiModels(key);
+    s.models = { ...(s.models || {}), geminiSet: models };
     saveAISettings(s);
+  };
+  if (!models) await refresh();
+  const plan = [[models.main, 40000], [models.lite, 30000], [models.lite, 30000]];
+  let lastErr;
+  for (let i = 0; i < plan.length; i++) {
+    const [model, timeout] = plan[i];
+    if (i > 0 && plan[i - 1][0] === model) await wait(2000);
+    try {
+      return await geminiChat(key, model, turns, photoDataUrl, timeout);
+    } catch (e) {
+      lastErr = e;
+      if (e.kind === "model") { await refresh(); continue; }
+      if (e.kind !== "busy" && e.kind !== "limit") throw e;
+    }
   }
-  try {
-    return await geminiChat(key, model, turns, photoDataUrl);
-  } catch (e) {
-    if (e.kind !== "model") throw e;
-    // The saved model was retired: pick a fresh one and try once more.
-    model = await pickGeminiModel(key);
-    s.models = { ...(s.models || {}), gemini: model };
-    saveAISettings(s);
-    return geminiChat(key, model, turns, photoDataUrl);
-  }
+  throw new AIError(lastErr?.kind === "limit" ? "limit" : "busy",
+    (lastErr?.kind === "limit" ? "Gemini's free limit is used up for now. Try again later." : "Gemini is too busy right now. Try again in a minute.")
+    + ` (${lastErr?.message || ""})`);
 }
