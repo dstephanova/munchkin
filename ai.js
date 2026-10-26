@@ -191,8 +191,9 @@ function sourcesOf(cand) {
 function toContents(turns, photoDataUrl) {
   return turns.map((t, i) => {
     const parts = [];
-    if (i === 0 && photoDataUrl) {
-      const [head, b64] = photoDataUrl.split(",");
+    const photo = t.photo || (i === 0 ? photoDataUrl : null);
+    if (photo) {
+      const [head, b64] = photo.split(",");
       const mime = (head.match(/data:(.*?);/) || [])[1] || "image/jpeg";
       parts.push({ inline_data: { mime_type: mime, data: b64 } });
     }
@@ -262,7 +263,7 @@ export async function askAI(turns, photoDataUrl, { demo = false, onStatus = () =
   // Step 2
   onStatus("Counting the calories…");
   const transcript = [...turns, { role: "model", text: reply }].slice(-12)
-    .map((t) => `${t.role === "model" ? "Munchkin" : "Person"}: ${t.text || "(sent a photo)"}`).join("\n\n");
+    .map((t) => `${t.role === "model" ? "Munchkin" : "Person"}: ${t.photo ? "(sent a photo) " : ""}${t.text || (t.role === "model" ? "" : "(sent a photo)")}`).join("\n\n");
   const before = meal && meal.items?.length ? `\n\nPrevious numbers (may be outdated): ${JSON.stringify({ name: meal.name, items: meal.items })}` : "";
   let numbers = null;
   for (const model of [models.fast, chatModel]) {

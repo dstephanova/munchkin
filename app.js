@@ -230,7 +230,7 @@ function renderMeal() {
   if (!m) { state.view = "day"; return render(); }
   const t = sumItems(m.items);
   const firstTime = m.chat.length === 0;
-  const placeholder = firstTime ? "What did you eat? e.g. two slices of pizza" : "Fix anything, e.g. it was half a portion";
+  const placeholder = firstTime ? "What did you eat? e.g. two slices of pizza" : "Fix anything, or add a photo";
 
   const chatHTML = m.chat.map((c, i) => {
     if (c.role === "model") {
@@ -241,8 +241,9 @@ function renderMeal() {
       return `<div class="model-row"><span class="mini-cat">${catSVG({ label: "", head: true })}</span><div class="msg model">${pretty(c.text)}${src}</div></div>${chips}`;
     }
     const txt = c.text || "";
-    const note = i === 0 && m.photo ? `<span class="photo-note">📷 photo sent</span>` : "";
-    return `<div class="msg user">${txt ? esc(txt) : "What's this?"}${note}</div>`;
+    const note = i === 0 && m.photo && !m.photoFromChat && !c.photo ? `<span class="photo-note">📷 photo sent</span>` : "";
+    const pic = c.photo ? `<img class="chat-photo" src="${esc(c.photo)}" alt="Photo you sent">` : "";
+    return `<div class="msg user">${pic}${txt ? esc(txt) : (pic ? "" : "What's this?")}${note}</div>`;
   }).join("");
 
   $app.innerHTML = `
@@ -273,7 +274,9 @@ function renderMeal() {
     </section>
   </main>
   <div class="composer">
+    ${state.pendingPhoto ? `<div class="pending-photo"><img src="${esc(state.pendingPhoto)}" alt="Photo to send"><span>Photo ready to send</span><button class="icon-btn" data-action="drop-photo" aria-label="Remove photo">✕</button></div>` : ""}
     <form data-form="chat">
+      <label class="photo-btn" aria-label="Add a photo">${ICON.camera}<input type="file" id="pick-chat-photo" accept="image/*"></label>
       <textarea id="composer" rows="1" placeholder="${esc(placeholder)}" aria-label="Message to Munchkin"></textarea>
       <button class="send-btn" type="submit" aria-label="Send" ${state.sending ? "disabled" : ""}>${ICON.send}</button>
     </form>
@@ -337,6 +340,7 @@ function go(view) {
     state.confirmDelete = false;
     state.composer = "";
     state.sending = false;
+    state.pendingPhoto = null;
     render();
     return;
   }
@@ -400,12 +404,41 @@ async function saveMeal(m) {
 function sendMessage(text) {
   const m = state.meal;
   if (!m || state.sending) return;
-  if (!text && m.chat.length > 0) return;
-  if (!text && !m.photo) return;
-  m.chat.push({ role: "user", text: text || "" });
+  const photo = state.pendingPhoto;
+  if (!text && !photo && !(m.chat.length === 0 && m.photo)) return;
+  const turn = { role: "user", text: text || "" };
+  if (photo) {
+    turn.photo = photo;
+    if (!m.photo) { m.photo = photo; m.photoFromChat = true; } // also the meal's picture
+  }
+  m.chat.push(turn);
   state.composer = "";
+  state.pendingPhoto = null;
   runAI();
 }
+
+// Photos added inside the chat: camera/gallery button or paste (Ctrl+V).
+async function addChatPhoto(file) {
+  if (!file || !state.meal) return;
+  const count = state.meal.chat.filter((c) => c.photo).length + (state.meal.photo ? 1 : 0);
+  if (count >= 6) { toast("That's the photo limit for one meal (6)."); return; }
+  try {
+    state.pendingPhoto = await readPhoto(file, 640);
+  } catch {
+    toast("Couldn't open that photo. Try another one."); return;
+  }
+  const ta = document.getElementById("composer");
+  if (ta) state.composer = ta.value;
+  render();
+  document.getElementById("composer")?.focus();
+}
+document.addEventListener("paste", (ev) => {
+  if (state.view !== "meal") return;
+  const item = [...(ev.clipboardData?.items || [])].find((it) => it.type.startsWith("image/"));
+  if (!item) return;
+  ev.preventDefault();
+  addChatPhoto(item.getAsFile());
+});
 
 async function runAI() {
   const m = state.meal;
@@ -420,7 +453,7 @@ async function runAI() {
   render(); scrollToEnd(); setAIStatus("Thinking…");
   try {
     const turns = m.chat.slice(-24);
-    const res = await askAI(turns, m.chat.length <= 24 ? m.photo : null, { demo, onStatus: setAIStatus, meal: { name: m.name, items: m.items } });
+    const res = await askAI(turns, m.chat.length <= 24 && !m.photoFromChat ? m.photo : null, { demo, onStatus: setAIStatus, meal: { name: m.name, items: m.items } });
     stopAIStatus();
     m.chat.push({ role: "model", text: res.reply, sources: res.sources || [], options: res.options || [] });
     m.estimate = !!res.estimate;
@@ -482,6 +515,10 @@ $app.addEventListener("click", async (ev) => {
     state.meal.slot = el.dataset.slot;
     render();
     if (!state.meal._draft) { try { await saveMeal(state.meal); toast(`Moved to ${SLOT_NAME[state.meal.slot].toLowerCase()}`); } catch { toast("Couldn't save that change."); } }
+  } else if (a === "drop-photo") {
+    state.pendingPhoto = null;
+    const ta = document.getElementById("composer"); if (ta) state.composer = ta.value;
+    render();
   } else if (a === "quick") {
     sendMessage(el.dataset.text);
   } else if (a === "retry") {
@@ -528,6 +565,10 @@ $app.addEventListener("click", async (ev) => {
 
 $app.addEventListener("change", async (ev) => {
   const t = ev.target;
+  if (t.id === "pick-chat-photo") {
+    addChatPhoto(t.files && t.files[0]);
+    return;
+  }
   if (t.id === "pick-camera" || t.id === "pick-gallery") {
     const file = t.files && t.files[0];
     if (!file) return;
