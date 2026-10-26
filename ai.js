@@ -40,7 +40,9 @@ Rules:
 - Use their corrections as facts (if they say 200 g, use 200 g).
 - If the photo is a nutrition label, read it, and use the per-portion values for the amount they had (ask if unknown).
 - If it is not food, say so kindly and return "items": [].
-- Be realistic, not perfect: these are estimates. Never lecture about diet.`;
+- Be realistic, not perfect: these are estimates. Never lecture about diet.
+- You can search Google. When the person names a brand, shop, packaged product, restaurant or chain dish, SEARCH for its real nutrition label and package size and use those numbers (e.g. half of a 600 g pack = 300 g). Say briefly that you checked online. Don't search for plain basic foods like an apple or rice.
+- Even after searching, your final answer must be ONLY the JSON object.`;
 
 function cleanJSON(text) {
   try { return JSON.parse(text); } catch {}
@@ -82,9 +84,9 @@ function newestFirst(list) {
   return list.sort((a, b) => versionScore(b) - versionScore(a) || a.length - b.length);
 }
 
-// Finds the newest regular "flash" model and the newest "flash-lite" model this key can use.
-// Lite is the backup: lighter, faster and usually much less crowded.
-const FALLBACK_MODELS = { main: "gemini-2.5-flash", lite: "gemini-2.5-flash-lite" };
+// Picks which Gemini models to try, fastest first:
+// newest "lite" model, newest regular "flash", then the older, very reliable 2.5 models.
+const FALLBACK_MODELS = { order: ["gemini-2.5-flash-lite", "gemini-2.5-flash"] };
 export async function pickGeminiModels(key, onStatus = () => {}) {
   onStatus("Asking Google which models your key can use…");
   const ctl = new AbortController();
@@ -111,12 +113,17 @@ export async function pickGeminiModels(key, onStatus = () => {}) {
     .map((m) => m.name.replace(/^models\//, ""));
   const odd = /(preview|exp|image|tts|audio|live|thinking|embedding|vision|8b|latest|native|computer|robotics)/;
   const stable = names.filter((n) => /^gemini-[\d.]+-flash/.test(n) && !odd.test(n));
-  const main = newestFirst(stable.filter((n) => !/lite/.test(n)))[0]
-    || newestFirst(names.filter((n) => /flash/.test(n) && !/lite/.test(n) && !/(image|tts|audio|live|embedding)/.test(n)))[0];
-  const lite = newestFirst(stable.filter((n) => /lite/.test(n)))[0]
-    || newestFirst(names.filter((n) => /flash-lite/.test(n) && !/(image|tts|audio|live|embedding)/.test(n)))[0];
-  if (!main && !lite) return { ...FALLBACK_MODELS };
-  return { main: main || lite, lite: lite || main };
+  const lite = newestFirst(stable.filter((n) => /lite/.test(n)))[0];
+  const main = newestFirst(stable.filter((n) => !/lite/.test(n)))[0];
+  const order = [lite, main, "gemini-2.5-flash-lite", "gemini-2.5-flash"]
+    .filter((n, i, a) => n && a.indexOf(n) === i && (names.length === 0 || names.includes(n)));
+  return order.length ? { order } : { ...FALLBACK_MODELS };
+}
+
+function thinkingFor(model) {
+  if (/^gemini-2\.5/.test(model)) return { thinkingBudget: 0 };
+  if (/^gemini-[3-9]/.test(model)) return { thinkingLevel: "low" };
+  return null;
 }
 
 async function geminiChat(key, model, turns, photoDataUrl, timeoutMs) {
@@ -130,42 +137,64 @@ async function geminiChat(key, model, turns, photoDataUrl, timeoutMs) {
     parts.push({ text: t.role === "model" ? (t.raw || t.text) : (t.text || "Here's what I ate. What is it?") });
     return { role: t.role === "model" ? "model" : "user", parts };
   });
-  const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), timeoutMs);
-  let res, data;
-  try {
-    res = await fetch(`${GEMINI}/models/${model}:generateContent`, {
-      method: "POST",
-      signal: ctl.signal,
-      headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: INSTRUCTIONS }] },
-        contents,
-        generationConfig: { responseMimeType: "application/json", temperature: 0.4 },
-      }),
-    });
-    data = await res.json().catch(() => null);
-  } catch (e) {
-    if (ctl.signal.aborted) throw new AIError("busy", `Gemini took too long to answer (${model}).`);
-    throw new AIError("network", "Couldn't reach Google. Check your internet and try again.");
-  } finally {
-    clearTimeout(timer);
+
+  // Options we may have to switch off if this model doesn't support them.
+  const opts = { search: true, think: !!thinkingFor(model), json: false };
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const generationConfig = { temperature: 0.4 };
+    if (opts.think) generationConfig.thinkingConfig = thinkingFor(model);
+    if (opts.json) generationConfig.responseMimeType = "application/json";
+    const body = { systemInstruction: { parts: [{ text: INSTRUCTIONS }] }, contents, generationConfig };
+    if (opts.search) body.tools = [{ google_search: {} }];
+
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), timeoutMs);
+    let res, data;
+    try {
+      res = await fetch(`${GEMINI}/models/${model}:generateContent`, {
+        method: "POST",
+        signal: ctl.signal,
+        headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+        body: JSON.stringify(body),
+      });
+      data = await res.json().catch(() => null);
+    } catch {
+      if (ctl.signal.aborted) throw new AIError("busy", `Gemini took too long to answer (${model}).`);
+      throw new AIError("network", "Couldn't reach Google. Check your internet and try again.");
+    } finally {
+      clearTimeout(timer);
+    }
+    const detail = data?.error?.message || "";
+    if (res.status === 400) {
+      if (opts.think && /think/i.test(detail)) { opts.think = false; continue; }
+      if (opts.search && /(tool|search|ground)/i.test(detail)) { opts.search = false; opts.json = true; continue; }
+    }
+    if (res.status === 429) {
+      if (opts.search && /(search|ground)/i.test(detail)) { opts.search = false; opts.json = true; continue; }
+      throw new AIError("limit", `Gemini's free limit is used up for now (${model}).`);
+    }
+    if ([500, 502, 503, 504].includes(res.status)) throw new AIError("busy", `Gemini is overloaded right now (${res.status}, ${model}).`);
+    if (res.status === 404 || /not found|not supported for generateContent/i.test(detail)) throw new AIError("model", `Model ${model} isn't available.`);
+    if (res.status === 400 || res.status === 401 || res.status === 403) {
+      if (/api key|permission|unauth/i.test(detail)) throw new AIError("key", "Your Gemini key stopped working. Paste a fresh one in Settings.");
+      throw new AIError("other", `Gemini couldn't read that: ${detail || res.status}`);
+    }
+    if (!res.ok) throw new AIError("busy", `Gemini had a hiccup (${res.status}, ${model}).`);
+    const cand = data?.candidates?.[0];
+    if (!cand || cand.finishReason === "SAFETY") throw new AIError("other", "Gemini didn't want to answer that one. Try describing it in words.");
+    const text = (cand.content?.parts || []).filter((p) => !p.thought).map((p) => p.text || "").join("");
+    const parsed = cleanJSON(text);
+    if (!parsed) throw new AIError("busy", "Gemini's answer came out jumbled.");
+    const result = normalise(parsed);
+    const seen = new Set();
+    result.sources = (cand.groundingMetadata?.groundingChunks || [])
+      .map((c) => c.web)
+      .filter((w) => w && w.uri && !seen.has(w.title || w.uri) && seen.add(w.title || w.uri))
+      .slice(0, 3)
+      .map((w) => ({ title: String(w.title || "source").slice(0, 60), uri: String(w.uri) }));
+    return result;
   }
-  const detail = data?.error?.message || "";
-  if (res.status === 429) throw new AIError("limit", `Gemini's free limit is used up for now (${model}).`);
-  if ([500, 502, 503, 504].includes(res.status)) throw new AIError("busy", `Gemini is overloaded right now (${res.status}, ${model}).`);
-  if (res.status === 404 || /not found|not supported/i.test(detail)) throw new AIError("model", `Model ${model} isn't available.`);
-  if (res.status === 400 || res.status === 401 || res.status === 403) {
-    if (/api key|permission|unauth/i.test(detail)) throw new AIError("key", "Your Gemini key stopped working. Paste a fresh one in Settings.");
-    throw new AIError("other", `Gemini couldn't read that: ${detail || res.status}`);
-  }
-  if (!res.ok) throw new AIError("busy", `Gemini had a hiccup (${res.status}, ${model}).`);
-  const cand = data?.candidates?.[0];
-  if (!cand || cand.finishReason === "SAFETY") throw new AIError("other", "Gemini didn't want to answer that one. Try describing it in words.");
-  const text = (cand.content?.parts || []).filter((p) => !p.thought).map((p) => p.text || "").join("");
-  const parsed = cleanJSON(text);
-  if (!parsed) throw new AIError("busy", "Gemini's answer came out jumbled.");
-  return normalise(parsed);
+  throw new AIError("other", "Gemini couldn't handle this request.");
 }
 
 // ---------- pretend AI for testing (?demo) ----------
@@ -205,19 +234,20 @@ export async function askAI(turns, photoDataUrl, { demo = false, onStatus = () =
     s.models = { ...(s.models || {}), geminiSet: models };
     saveAISettings(s);
   };
-  if (!models) await refresh();
-  const plan = [[models.main, 40000], [models.lite, 30000], [models.lite, 30000]];
+  if (!models || !Array.isArray(models.order)) await refresh();
   let lastErr;
-  for (let i = 0; i < plan.length; i++) {
-    const [model, timeout] = plan[i];
-    if (i > 0 && plan[i - 1][0] === model) await wait(2000);
-    onStatus(i === 0 ? `Asking ${model}…` : `Main model busy, trying backup ${model}…`);
+  const tried = new Set();
+  for (let i = 0; i < models.order.length && i < 4; i++) {
+    const model = models.order[i];
+    if (tried.has(model)) continue;
+    tried.add(model);
+    onStatus(i === 0 ? `Asking ${model}…` : `That was slow, trying ${model}…`);
     try {
-      return await geminiChat(key, model, turns, photoDataUrl, timeout);
+      return await geminiChat(key, model, turns, photoDataUrl, 30000);
     } catch (e) {
       lastErr = e;
-      if (e.kind === "model") { await refresh(); continue; }
-      if (e.kind !== "busy" && e.kind !== "limit") throw e;
+      if (e.kind === "model" || e.kind === "busy" || e.kind === "limit") continue;
+      throw e;
     }
   }
   throw new AIError(lastErr?.kind === "limit" ? "limit" : "busy",

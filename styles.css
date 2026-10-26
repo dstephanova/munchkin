@@ -384,3 +384,5 @@ a { color: var(--accent-deep); font-weight: 700; }
   text-align: center;
 }
 .ai-status { color: var(--muted); font-size: .8rem; margin: 4px 0 0 4px; font-variant-numeric: tabular-nums; }
+.msg .sources { display: block; margin-top: 6px; font-size: .78rem; color: var(--muted); }
+.msg .sources a { font-weight: 700; }

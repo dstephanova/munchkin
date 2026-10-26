@@ -225,7 +225,8 @@ function renderMeal() {
 
   const chatHTML = m.chat.map((c, i) => {
     if (c.role === "model") {
-      return `<div class="model-row"><span class="mini-cat">${catSVG({ label: "", head: true })}</span><div class="msg model">${esc(c.text)}</div></div>`;
+      const src = (c.sources || []).length ? `<span class="sources">🔎 Checked: ${c.sources.map((x) => `<a href="${esc(x.uri)}" target="_blank" rel="noopener">${esc(x.title)}</a>`).join(", ")}</span>` : "";
+      return `<div class="model-row"><span class="mini-cat">${catSVG({ label: "", head: true })}</span><div class="msg model">${esc(c.text)}${src}</div></div>`;
     }
     const txt = c.text || "";
     const note = i === 0 && m.photo ? `<span class="photo-note">📷 photo sent</span>` : "";
@@ -409,7 +410,7 @@ async function runAI() {
     const turns = m.chat.slice(-24);
     const res = await askAI(turns, m.chat.length <= 24 ? m.photo : null, { demo, onStatus: setAIStatus });
     stopAIStatus();
-    m.chat.push({ role: "model", text: res.reply, raw: JSON.stringify({ reply: res.reply, meal: { name: res.name, items: res.items } }) });
+    m.chat.push({ role: "model", text: res.reply, sources: res.sources || [], raw: JSON.stringify({ reply: res.reply, meal: { name: res.name, items: res.items } }) });
     m.name = res.name;
     m.items = res.items;
     state.sending = false;
@@ -498,7 +499,7 @@ $app.addEventListener("click", async (ev) => {
       const t = await askAI([{ role: "user", text: "one medium apple" }], null, { demo, onStatus: setAIStatus });
       const kcal = t.items.reduce((n, i) => n + i.calories, 0);
       const set = loadAISettings().models?.geminiSet;
-      state.settingsStatus = { ok: true, text: `It works! Test guess: ${t.name}, ${kcal} kcal.${set ? ` Main model: ${set.main}, backup: ${set.lite}.` : ""}` };
+      state.settingsStatus = { ok: true, text: `It works! Test guess: ${t.name}, ${kcal} kcal.${set?.order ? ` Models: ${set.order.join(" → ")}.` : ""}` };
     } catch (e) {
       state.settingsStatus = { ok: false, text: e.message };
     }
