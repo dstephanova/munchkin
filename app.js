@@ -1,5 +1,6 @@
 import { openViewer } from "./viewer.js";
 import { catSVG } from "./cat.js";
+import { ACTIVITY, GOAL, suggestGoals } from "./goals.js";
 import { createStore } from "./store.js";
 import { askAI, hasKey, loadAISettings, saveAISettings, pickGeminiModels, PROVIDERS } from "./ai.js";
 
@@ -16,7 +17,9 @@ const SLOTS = [
 const SLOT_NAME = Object.fromEntries(SLOTS);
 
 const state = {
-  view: "loading", // loading | login | day | meal | settings
+  view: "loading", // loading | login | day | meal | settings | goals
+  goals: null,
+  goalForm: null,
   user: null,
   date: iso(new Date()),
   meals: [],
@@ -33,6 +36,7 @@ const state = {
 };
 let store;
 let unsubDay = null;
+let unsubGoals = null;
 
 // Live "what is the AI doing" line with a seconds counter.
 let aiTicker = null;
@@ -138,6 +142,8 @@ function render() {
   }
   if (state.view === "login") return renderLogin();
   if (state.view === "settings") return renderSettings();
+  if (state.view === "goals") return renderGoals();
+  if (state.view === "calendar") return renderCalendar();
   if (state.view === "meal") return renderMeal();
   return renderDay();
 }
@@ -174,12 +180,16 @@ function renderDay() {
       <div class="meal-list">
         ${list.map((m) => {
           const mt = sumItems(m.items);
-          return `<button class="meal-card" data-action="open-meal" data-id="${esc(m.id)}">
+          if (state.confirmDeleteId === m.id) {
+            return `<div class="meal-card confirm-row"><span class="info"><span class="name">Delete “${esc(m.name || "Meal")}”?</span><span class="mini">It's gone for good.</span></span>
+              <span class="btn-row"><button class="btn danger small" data-action="home-delete" data-id="${esc(m.id)}">Delete</button><button class="btn ghost small" data-action="home-keep">Keep</button></span></div>`;
+          }
+          return `<div class="meal-wrap"><button class="meal-card" data-action="open-meal" data-id="${esc(m.id)}">
             ${m.photo ? `<img class="thumb" src="${esc(m.photo)}" alt="Open photo" data-action="view-thumb" data-id="${esc(m.id)}">` : `<span class="thumb">${catPic("small", "")}</span>`}
             <span class="info"><span class="name">${esc(m.name || "Meal")}</span>
               <span class="mini">P ${mt.protein}g · C ${mt.carbs}g · F ${mt.fat}g</span></span>
             <span class="kc">${mt.calories} kcal</span>
-          </button>`;
+          </button><button class="del-btn" data-action="home-ask-delete" data-id="${esc(m.id)}" aria-label="Delete ${esc(m.name || "meal")}">${ICON.trash}</button></div>`;
         }).join("")}
         ${list.length === 0 ? `<button class="add-slot" data-action="open-sheet" data-slot="${id}">+ Add ${label.toLowerCase()}</button>` : ""}
       </div>
@@ -197,21 +207,47 @@ function renderDay() {
     ${needKey ? `<div class="card"><h2>One last thing</h2><p>Add your free Gemini key so Munchkin can guess your food.</p><div class="btn-row"><button class="btn" data-action="settings">Add my key</button></div></div>` : ""}
     <nav class="datenav" aria-label="Choose day">
       <button class="icon-btn" data-action="prev-day" aria-label="Previous day">${ICON.back}</button>
-      <div class="label"><strong>${prettyDate(state.date)}</strong><span>${longDate(state.date)}</span></div>
+      <button class="label" data-action="calendar" aria-label="Open calendar"><strong>${prettyDate(state.date)}</strong><span>${longDate(state.date)} · 📅</span></button>
       <button class="icon-btn" data-action="next-day" aria-label="Next day" ${isToday ? "disabled" : ""}>${ICON.next}</button>
     </nav>
-    <section class="summary">
+    ${summaryHTML(t, bubble)}
+    ${slotsHTML}
+  </main>
+  <button class="fab" data-action="open-sheet">${ICON.plus} Add meal</button>
+  ${state.sheet ? sheetHTML() : ""}`;
+}
+
+function bar(value, goal, cls = "") {
+  const pct = goal > 0 ? Math.min(100, Math.round((value / goal) * 100)) : 0;
+  return `<div class="bar ${cls} ${value > goal ? "over" : ""}"><i style="width:${pct}%"></i></div>`;
+}
+function summaryHTML(t, bubble) {
+  const g = state.goals;
+  if (!g) {
+    return `<section class="summary">
       <div class="cat-wrap">${catPic()}</div>
       <div>
         <div class="kcal">${t.calories}<small>kcal</small></div>
         <p class="bubble">${bubble}</p>
         ${macrosHTML(t)}
+        <button class="link-btn" data-action="goals">🎯 Set my daily goals</button>
       </div>
-    </section>
-    ${slotsHTML}
-  </main>
-  <button class="fab" data-action="open-sheet">${ICON.plus} Add meal</button>
-  ${state.sheet ? sheetHTML() : ""}`;
+    </section>`;
+  }
+  const left = g.calories - t.calories;
+  const leftText = left >= 0 ? `<strong>${left}</strong> kcal left` : `<strong>${-left}</strong> kcal over your goal`;
+  const row = (key, label, cls) => `<div class="mrow"><span class="mlabel"><i class="${cls}"></i>${label}</span><span class="mval">${t[key]} / ${g[key]} g</span>${bar(t[key], g[key], cls)}</div>`;
+  return `<section class="summary goals">
+    <div class="cat-wrap">${catPic()}</div>
+    <div class="ginfo">
+      <div class="kcal">${t.calories}<small> / ${g.calories} kcal</small></div>
+      <p class="bubble">${leftText}</p>
+      ${bar(t.calories, g.calories, "big")}
+    </div>
+    <div class="macro-bars">
+      ${row("protein", "Protein", "p")}${row("carbs", "Carbs", "c")}${row("fat", "Fat", "f")}
+    </div>
+  </section>`;
 }
 
 function sheetHTML() {
@@ -333,10 +369,159 @@ function renderSettings() {
       <p>Your key stays on this device only. On a new phone, paste it again.</p>
     </section>
     <section class="card">
+      <h2>Daily goals</h2>
+      ${state.goals ? `<p>${state.goals.calories} kcal · protein ${state.goals.protein} g · carbs ${state.goals.carbs} g · fat ${state.goals.fat} g</p>` : `<p>Not set yet. Munchkin can work them out for you.</p>`}
+      <div class="btn-row"><button class="btn" data-action="goals">${state.goals ? "Change my goals" : "Set my goals"}</button></div>
+    </section>
+    <section class="card">
       <h2>Account</h2>
       <p>${u.name ? `${esc(u.name)}<br>` : ""}${esc(u.email || "")}</p>
       <p>Your diary is saved online, so it's safe even if you reset your phone. Only you can see it.</p>
       <div class="btn-row"><button class="btn ghost" data-action="signout">Log out</button></div>
+    </section>
+  </main>`;
+}
+
+const TARGETS = [["calories", "Calories", "kcal"], ["protein", "Protein", "g"], ["carbs", "Carbs", "g"], ["fat", "Fat", "g"]];
+
+function openGoals() {
+  const g = state.goals;
+  const profile = { sex: "female", age: "", height: "", weight: "", activity: "light", goal: "keep", ...(g?.profile || {}) };
+  const targets = g ? { calories: g.calories, protein: g.protein, carbs: g.carbs, fat: g.fat } : { calories: "", protein: "", carbs: "", fat: "" };
+  state.goalForm = { profile, targets, edited: new Set(g?.edited || []) };
+  go("goals");
+}
+
+function renderGoals() {
+  const f = state.goalForm;
+  const p = f.profile;
+  const choice = (field, value, label, sub = "") =>
+    `<button class="chip ${sub ? "chip-tall" : ""}" data-action="goal-pick" data-field="${field}" data-value="${value}" aria-pressed="${p[field] === value}">${label}${sub ? `<small>${sub}</small>` : ""}</button>`;
+  $app.innerHTML = `
+  <main class="screen">
+    <header class="topbar">
+      <button class="icon-btn" data-action="back" aria-label="Back">${ICON.back}</button>
+      <h1>Daily goals</h1>
+    </header>
+    <section class="card">
+      <h2>About you</h2>
+      <p>Munchkin uses this to work out what your body needs each day.</p>
+      <div class="chips">${choice("sex", "female", "Woman")}${choice("sex", "male", "Man")}</div>
+      <div class="field-row">
+        <div class="field"><label for="g-age">Age</label><input id="g-age" type="number" inputmode="numeric" data-pf="age" value="${esc(p.age)}" placeholder="e.g. 30"></div>
+        <div class="field"><label for="g-height">Height (cm)</label><input id="g-height" type="number" inputmode="numeric" data-pf="height" value="${esc(p.height)}" placeholder="e.g. 165"></div>
+        <div class="field"><label for="g-weight">Weight (kg)</label><input id="g-weight" type="number" inputmode="decimal" data-pf="weight" value="${esc(p.weight)}" placeholder="e.g. 60"></div>
+      </div>
+      <div class="field"><label>How active are you?</label>
+        <div class="chips stack">${ACTIVITY.map(([id, label, sub]) => choice("activity", id, label, sub)).join("")}</div>
+      </div>
+      <div class="field"><label>Your goal</label>
+        <div class="chips">${GOAL.map(([id, label]) => choice("goal", id, label)).join("")}</div>
+      </div>
+    </section>
+    <section class="card">
+      <h2>Your daily targets</h2>
+      <p id="g-sug">${sugText()}</p>
+      <div class="field-row four">
+        ${TARGETS.map(([k, label, unit]) => `<div class="field"><label for="t-${k}">${label} (${unit})</label><input id="t-${k}" type="number" inputmode="numeric" data-tg="${k}" value="${esc(f.targets[k])}"></div>`).join("")}
+      </div>
+      <p id="g-check" class="status-line">${macroCheck()}</p>
+      <p>You can change any number yourself, for example if a doctor or trainer gave you different ones. These are estimates, not medical advice.</p>
+      <div class="btn-row"><button class="btn" data-action="save-goals">Save goals</button>${f.edited.size ? `<button class="btn ghost" data-action="goals-reset">Use Munchkin's numbers</button>` : ""}</div>
+    </section>
+  </main>`;
+}
+function sugText() {
+  const s = suggestGoals(state.goalForm.profile);
+  if (!s) return "Fill in your age, height and weight and Munchkin will suggest your numbers.";
+  return `Munchkin suggests <strong>${s.calories} kcal</strong> a day (your body uses about ${s.maintenance} kcal a day to stay the same).`;
+}
+function macroCheck() {
+  const t = state.goalForm.targets;
+  const fromMacros = Math.round((Number(t.protein) || 0) * 4 + (Number(t.carbs) || 0) * 4 + (Number(t.fat) || 0) * 9);
+  if (!fromMacros || !Number(t.calories)) return "";
+  const diff = fromMacros - Number(t.calories);
+  return Math.abs(diff) > 60 ? `Heads-up: your protein, carbs and fat add up to ${fromMacros} kcal, not ${t.calories}.` : "";
+}
+function refreshGoalSuggestion() {
+  const f = state.goalForm;
+  const s = suggestGoals(f.profile);
+  if (s) {
+    for (const [k] of TARGETS) {
+      if (f.edited.has(k)) continue;
+      f.targets[k] = s[k];
+      const el = document.getElementById(`t-${k}`);
+      if (el) el.value = s[k];
+    }
+  }
+  const sug = document.getElementById("g-sug"); if (sug) sug.innerHTML = sugText();
+  const chk = document.getElementById("g-check"); if (chk) chk.textContent = macroCheck();
+}
+
+// ---------- calendar ----------
+async function openCalendar() {
+  const d = fromIso(state.date);
+  state.cal = { year: d.getFullYear(), month: d.getMonth(), days: null };
+  go("calendar");
+  loadCalendarMonth();
+}
+async function loadCalendarMonth() {
+  const c = state.cal;
+  const start = iso(new Date(c.year, c.month, 1)), end = iso(new Date(c.year, c.month + 1, 0));
+  c.days = null;
+  try {
+    const meals = await store.getRange(start, end);
+    if (state.cal !== c || state.view !== "calendar") return;
+    const days = {};
+    for (const m of meals) {
+      const t = sumItems(m.items || []);
+      const d = (days[m.date] ||= { calories: 0, meals: 0 });
+      d.calories += t.calories; d.meals += 1;
+    }
+    c.days = days;
+  } catch {
+    c.days = {};
+    toast("Couldn't load this month. Check your internet.");
+  }
+  if (state.view === "calendar") render();
+}
+function renderCalendar() {
+  const c = state.cal;
+  const first = new Date(c.year, c.month, 1);
+  const daysInMonth = new Date(c.year, c.month + 1, 0).getDate();
+  const lead = (first.getDay() + 6) % 7; // Monday first
+  const today = iso(new Date());
+  const goal = state.goals?.calories || 0;
+  const title = first.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  const weekdays = [...Array(7)].map((_, i) => new Date(2024, 0, 1 + i).toLocaleDateString(undefined, { weekday: "narrow" }));
+  const isThisMonth = c.year === new Date().getFullYear() && c.month === new Date().getMonth();
+  let cells = "";
+  for (let i = 0; i < lead; i++) cells += `<span class="cal-cell empty"></span>`;
+  let logged = 0, total = 0;
+  for (let day = 1; day <= daysInMonth; day++) {
+    const key = iso(new Date(c.year, c.month, day));
+    const info = c.days?.[key];
+    const future = key > today;
+    if (info) { logged++; total += info.calories; }
+    const status = !info ? "" : goal ? (info.calories > goal * 1.05 ? "over" : info.calories >= goal * 0.85 ? "near" : "under") : "logged";
+    cells += `<button class="cal-cell ${status} ${key === today ? "today" : ""} ${key === state.date ? "picked" : ""}" data-action="cal-day" data-date="${key}" ${future ? "disabled" : ""}>
+      <span class="num">${day}</span>${info ? `<span class="ck">${info.calories}</span>` : ""}</button>`;
+  }
+  $app.innerHTML = `
+  <main class="screen">
+    <header class="topbar">
+      <button class="icon-btn" data-action="back" aria-label="Back">${ICON.back}</button>
+      <h1>Calendar</h1>
+    </header>
+    <section class="card cal">
+      <div class="cal-head">
+        <button class="icon-btn" data-action="cal-month" data-step="-1" aria-label="Previous month">${ICON.back}</button>
+        <strong>${title}</strong>
+        <button class="icon-btn" data-action="cal-month" data-step="1" aria-label="Next month" ${isThisMonth ? "disabled" : ""}>${ICON.next}</button>
+      </div>
+      <div class="cal-grid">${weekdays.map((w) => `<span class="cal-wd">${w}</span>`).join("")}${cells}</div>
+      ${c.days === null ? `<p class="empty-note">Loading…</p>` : `<p>${logged ? `${logged} day${logged > 1 ? "s" : ""} logged · average ${Math.round(total / logged)} kcal a day` : "Nothing logged this month yet."}</p>`}
+      ${goal ? `<div class="cal-legend"><span><i class="near"></i>Around your goal</span><span><i class="under"></i>Under</span><span><i class="over"></i>Over</span></div>` : ""}
     </section>
   </main>`;
 }
@@ -372,7 +557,7 @@ function back() {
   else go("day");
 }
 window.addEventListener("popstate", () => {
-  if (state.view === "meal" || state.view === "settings") {
+  if (["meal", "settings", "goals", "calendar"].includes(state.view)) {
     state.settingsStatus = null;
     go("day");
   }
@@ -512,6 +697,42 @@ $app.addEventListener("click", async (ev) => {
   if (a === "signin") {
     state.loginError = "";
     try { await store.signIn(); } catch (e) { state.loginError = e.message; render(); }
+  } else if (a === "calendar") {
+    openCalendar();
+  } else if (a === "cal-month") {
+    const step = Number(el.dataset.step);
+    const d = new Date(state.cal.year, state.cal.month + step, 1);
+    state.cal = { year: d.getFullYear(), month: d.getMonth(), days: null };
+    render(); loadCalendarMonth();
+  } else if (a === "cal-day") {
+    state.date = el.dataset.date; watchDay(); back();
+  } else if (a === "home-ask-delete") {
+    state.confirmDeleteId = el.dataset.id; render();
+  } else if (a === "home-keep") {
+    state.confirmDeleteId = null; render();
+  } else if (a === "home-delete") {
+    state.confirmDeleteId = null;
+    try { await store.remove(el.dataset.id); toast("Meal deleted"); } catch { toast("Couldn't delete. Try again."); render(); }
+  } else if (a === "goals") {
+    openGoals();
+  } else if (a === "goal-pick") {
+    state.goalForm.profile[el.dataset.field] = el.dataset.value;
+    const y = window.scrollY; render(); window.scrollTo(0, y);
+    refreshGoalSuggestion();
+  } else if (a === "goals-reset") {
+    state.goalForm.edited.clear();
+    const y = window.scrollY; render(); window.scrollTo(0, y);
+    refreshGoalSuggestion();
+  } else if (a === "save-goals") {
+    const f = state.goalForm;
+    const t = Object.fromEntries(TARGETS.map(([k]) => [k, Math.round(Number(f.targets[k]) || 0)]));
+    if (t.calories < 800) { toast("Please set calories of at least 800."); return; }
+    const p = { ...f.profile };
+    try {
+      await store.saveGoals({ ...t, profile: p, edited: [...f.edited], updatedAt: Date.now() });
+      toast("Goals saved 🎯");
+      back();
+    } catch { toast("Couldn't save. Check your internet and try again."); }
   } else if (a === "settings") {
     state.settingsStatus = null; go("settings");
   } else if (a === "back") {
@@ -639,6 +860,14 @@ $app.addEventListener("change", async (ev) => {
 });
 
 $app.addEventListener("input", (ev) => {
+  const t = ev.target;
+  if (state.view === "goals" && t.dataset.pf) { state.goalForm.profile[t.dataset.pf] = t.value; refreshGoalSuggestion(); return; }
+  if (state.view === "goals" && t.dataset.tg) {
+    state.goalForm.targets[t.dataset.tg] = t.value;
+    state.goalForm.edited.add(t.dataset.tg);
+    const chk = document.getElementById("g-check"); if (chk) chk.textContent = macroCheck();
+    return;
+  }
   if (ev.target.id === "composer") { state.composer = ev.target.value; autoGrow(ev.target); }
 });
 $app.addEventListener("keydown", (ev) => {
@@ -667,6 +896,8 @@ async function start() {
     if (!u) {
       if (unsubDay) unsubDay();
       unsubDay = null;
+      if (unsubGoals) unsubGoals();
+      unsubGoals = null; state.goals = null;
       state.meals = [];
       state.view = "login";
       render();
@@ -675,6 +906,8 @@ async function start() {
     state.date = iso(new Date());
     state.view = "day";
     watchDay();
+    if (unsubGoals) unsubGoals();
+    unsubGoals = store.watchGoals((g) => { state.goals = g; if (state.view === "day" || state.view === "settings") render(); });
     render();
   });
   if ("serviceWorker" in navigator && !demo) {

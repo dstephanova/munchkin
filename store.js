@@ -64,12 +64,23 @@ async function firebaseStore() {
       await fs.setDoc(fs.doc(mealsCol(), id), data);
     },
     async remove(id) { await fs.deleteDoc(fs.doc(mealsCol(), id)); },
+    async getRange(start, end) {
+      const q = fs.query(mealsCol(), fs.where("date", ">=", start), fs.where("date", "<=", end));
+      const snap = await fs.getDocs(q);
+      return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    },
+    watchGoals(cb) {
+      return fs.onSnapshot(fs.doc(db, "users", a.currentUser.uid, "settings", "goals"), (snap) => cb(snap.exists() ? snap.data() : null), () => cb(null));
+    },
+    async saveGoals(g) { await fs.setDoc(fs.doc(db, "users", a.currentUser.uid, "settings", "goals"), g); },
   };
 }
 
 function memoryStore() {
   const meals = new Map();
   const watchers = new Set();
+  let goals = null;
+  const goalWatchers = new Set();
   const notify = () => watchers.forEach((w) => w());
   const today = new Date();
   const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -101,5 +112,8 @@ function memoryStore() {
     newId() { return `m${Date.now()}${n++}`; },
     async save(meal) { meals.set(meal.id, structuredClone(meal)); notify(); },
     async remove(id) { meals.delete(id); notify(); },
+    async getRange(start, end) { return [...meals.values()].filter((m) => m.date >= start && m.date <= end); },
+    watchGoals(cb) { goalWatchers.add(cb); cb(goals); return () => goalWatchers.delete(cb); },
+    async saveGoals(g) { goals = structuredClone(g); goalWatchers.forEach((w) => w(goals)); },
   };
 }

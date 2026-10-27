@@ -465,3 +465,68 @@ a { color: var(--accent-deep); font-weight: 700; }
   border: 0; background: var(--ink); color: var(--bg); font-size: .7rem; display: grid; place-items: center;
 }
 .pend-note { color: var(--muted); font-weight: 700; font-size: .85rem; }
+
+/* ---------- goals ---------- */
+.link-btn { border: 0; background: none; padding: 0; margin-top: 10px; color: var(--accent-deep); font-weight: 800; font-size: .9rem; }
+.bar { height: 8px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+.bar i { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width .4s ease; }
+.bar.big { height: 12px; margin-top: 4px; }
+.bar.p i { background: var(--protein); }
+.bar.c i { background: var(--carbs); }
+.bar.f i { background: var(--fat); }
+.bar.over i { background: repeating-linear-gradient(45deg, var(--accent), var(--accent) 6px, var(--protein) 6px, var(--protein) 12px); }
+.summary.goals { grid-template-columns: 92px 1fr; }
+.summary.goals .ginfo { min-width: 0; }
+.summary.goals .kcal small { font-size: .9rem; }
+.summary.goals .bubble strong { color: var(--ink); }
+.macro-bars { grid-column: 1 / -1; display: grid; gap: 8px; }
+.mrow { display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; align-items: center; font-size: .85rem; }
+.mrow .bar { grid-column: 1 / -1; }
+.mlabel { font-weight: 800; display: inline-flex; align-items: center; gap: 6px; }
+.mlabel i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.mlabel i.p { background: var(--protein); } .mlabel i.c { background: var(--carbs); } .mlabel i.f { background: var(--fat); }
+.mval { color: var(--muted); font-weight: 700; font-variant-numeric: tabular-nums; }
+.field-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.field-row.four { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.field input[type="number"] { border: 2px solid var(--line); background: var(--bg); border-radius: 14px; padding: 11px 12px; width: 100%; min-width: 0; }
+.field input[type="number"]:focus { outline: none; border-color: var(--accent); }
+.chips.stack { display: grid; }
+.chip-tall { text-align: left; border-radius: 16px; padding: 10px 14px; display: grid; }
+.chip-tall small { font-weight: 600; opacity: .75; font-size: .8rem; }
+
+/* ---------- delete from home ---------- */
+.meal-wrap { position: relative; }
+.meal-wrap .meal-card { padding-right: 52px; }
+.del-btn {
+  position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+  width: 36px; height: 36px; border-radius: 50%; border: 0; background: transparent;
+  display: grid; place-items: center; opacity: .55;
+}
+.del-btn:hover, .del-btn:focus-visible { opacity: 1; background: var(--surface-2); }
+.del-btn svg { width: 18px; height: 18px; stroke: var(--ink); fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.confirm-row { grid-template-columns: 1fr auto; border: 2px solid var(--danger); }
+.btn.small { padding: 8px 14px; font-size: .85rem; }
+
+/* ---------- calendar ---------- */
+.datenav .label { border: 0; background: none; padding: 4px; border-radius: 14px; cursor: pointer; }
+.cal-head { display: flex; align-items: center; justify-content: space-between; }
+.cal-head strong { font-family: var(--font-display); font-size: 1.2rem; font-weight: 600; text-transform: capitalize; }
+.cal-head .icon-btn:disabled { opacity: .35; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+.cal-wd { text-align: center; color: var(--muted); font-weight: 800; font-size: .75rem; }
+.cal-cell {
+  aspect-ratio: 1; border: 0; border-radius: 12px; background: var(--surface-2);
+  display: grid; align-content: center; justify-items: center; gap: 1px; padding: 2px; min-width: 0;
+}
+.cal-cell.empty { background: transparent; }
+.cal-cell:disabled { opacity: .35; }
+.cal-cell .num { font-weight: 800; font-size: .9rem; }
+.cal-cell .ck { font-size: .62rem; font-weight: 700; color: var(--muted); font-variant-numeric: tabular-nums; }
+.cal-cell.logged, .cal-cell.near { background: color-mix(in srgb, var(--fat) 35%, var(--surface)); }
+.cal-cell.under { background: color-mix(in srgb, var(--carbs) 35%, var(--surface)); }
+.cal-cell.over { background: color-mix(in srgb, var(--protein) 40%, var(--surface)); }
+.cal-cell.today { outline: 2px solid var(--accent); }
+.cal-cell.picked { box-shadow: inset 0 0 0 2px var(--ink); }
+.cal-legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: .8rem; color: var(--muted); font-weight: 700; }
+.cal-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+.cal-legend i.near { background: var(--fat); } .cal-legend i.under { background: var(--carbs); } .cal-legend i.over { background: var(--protein); }
