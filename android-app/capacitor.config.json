@@ -1,0 +1,6 @@
+{
+  "appId": "io.github.dstephanova.munchkin",
+  "appName": "Munchkin",
+  "webDir": "www",
+  "android": { "backgroundColor": "#171024" }
+}

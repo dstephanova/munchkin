@@ -1,0 +1,16 @@
+{
+  "name": "munchkin-android",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Munchkin's Android helper: reads steps from Health Connect (Google Fit) and opens Munchkin with them.",
+  "dependencies": {
+    "@capacitor/android": "8.5.3",
+    "@capacitor/app": "8.0.1",
+    "@capacitor/app-launcher": "8.0.1",
+    "@capacitor/core": "8.5.3",
+    "capacitor-health": "8.4.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.5.3"
+  }
+}

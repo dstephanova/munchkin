@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Munchkin</title>
+<style>
+  :root { --bg: #171024; --surface: #221836; --ink: #f3ecff; --muted: #a898c8; --accent: #a982ff; --accent-ink: #1b1030; --line: #3a2b58; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { min-height: 100%; display: grid; place-items: center; text-align: center; padding: max(24px, env(safe-area-inset-top)) 20px max(24px, env(safe-area-inset-bottom)); }
+  .inner { display: grid; gap: 16px; justify-items: center; max-width: 360px; }
+  img { width: 170px; }
+  h1 { margin: 0; font-size: 2.2rem; color: var(--accent); }
+  p { margin: 0; color: var(--muted); line-height: 1.45; }
+  .nums { display: flex; gap: 12px; }
+  .num { background: var(--surface); border-radius: 18px; padding: 12px 18px; min-width: 120px; }
+  .num strong { display: block; font-size: 1.6rem; }
+  .num span { color: var(--muted); font-size: .85rem; }
+  button { border: 0; border-radius: 999px; padding: 14px 24px; font-size: 1rem; font-weight: 800; background: var(--accent); color: var(--accent-ink); width: 100%; }
+  button.ghost { background: var(--surface); color: var(--ink); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <div class="inner">
+    <img src="munchkin.webp" alt="Munchkin the cat">
+    <h1>Munchkin</h1>
+    <p id="msg">Getting your steps from Google Fit…</p>
+    <div class="nums" id="nums" hidden>
+      <div class="num"><strong id="steps">0</strong><span>steps today</span></div>
+      <div class="num"><strong id="kcal">0</strong><span>active kcal</span></div>
+    </div>
+    <button id="go" hidden>Open Munchkin with my steps</button>
+    <button id="perm" hidden>Allow access to my steps</button>
+    <button id="hc" class="ghost" hidden>Open Health Connect settings</button>
+    <button id="open" class="ghost">Just open Munchkin</button>
+  </div>
+</main>
+<script>
+const SITE = "https://dstephanova.github.io/munchkin/";
+const $ = (id) => document.getElementById(id);
+const P = () => (window.Capacitor && window.Capacitor.Plugins) || {};
+const PERMS = ["READ_STEPS", "READ_ACTIVE_CALORIES"];
+let data = null;
+let autoOpened = false;
+
+function iso(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; }
+function show(id, on) { $(id).hidden = !on; }
+
+async function openSite(withData) {
+  let url = SITE;
+  if (withData && data) url += `?sync=health&date=${data.date}&steps=${data.steps}&active=${data.kcal}`;
+  try { await P().AppLauncher.openUrl({ url }); } catch { location.href = url; }
+}
+
+async function sum(dataType, start, end) {
+  const r = await P().HealthPlugin.queryAggregated({ startDate: start.toISOString(), endDate: end.toISOString(), dataType, bucket: "day" });
+  return Math.round((r.aggregatedData || []).reduce((n, s) => n + (Number(s.value) || 0), 0));
+}
+
+async function run(auto) {
+  const H = P().HealthPlugin;
+  ["go", "perm", "hc", "nums"].forEach((id) => show(id, false));
+  if (!H) { $("msg").textContent = "This only works in the Android app."; return; }
+  try {
+    const av = await H.isHealthAvailable();
+    if (!av.available) {
+      $("msg").textContent = "Health Connect isn't set up on this phone. Install it from the Play Store, then open Munchkin again.";
+      $("hc").textContent = "Get Health Connect"; $("hc").onclick = () => H.showHealthConnectInPlayStore(); show("hc", true);
+      return;
+    }
+    const perm = await H.checkHealthPermissions({ permissions: PERMS });
+    const granted = perm.permissions && Object.values(perm.permissions).length && Object.values(perm.permissions).every(Boolean);
+    if (!granted) {
+      $("msg").textContent = "Munchkin needs your permission to read today's steps and active calories. It only reads them, never changes anything.";
+      show("perm", true);
+      return;
+    }
+    const now = new Date(), start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const [steps, kcal] = await Promise.all([sum("steps", start, now), sum("active-calories", start, now).catch(() => 0)]);
+    data = { date: iso(now), steps, kcal };
+    $("steps").textContent = steps.toLocaleString(); $("kcal").textContent = kcal.toLocaleString();
+    show("nums", true); show("go", true);
+    $("msg").textContent = steps ? "Here's today so far:" : "No steps yet today. If that's wrong, make sure Google Fit shares with Health Connect.";
+    if (auto && steps && !autoOpened) { autoOpened = true; setTimeout(() => openSite(true), 900); }
+  } catch (e) {
+    $("msg").textContent = "Couldn't read your steps: " + (e && e.message ? e.message : e);
+    $("hc").textContent = "Open Health Connect settings"; $("hc").onclick = () => H.openHealthConnectSettings(); show("hc", true);
+  }
+}
+
+$("perm").onclick = async () => {
+  try { await P().HealthPlugin.requestHealthPermissions({ permissions: PERMS }); } catch {}
+  run(true);
+};
+$("go").onclick = () => openSite(true);
+$("open").onclick = () => openSite(false);
+
+// Every time the app is opened (or comes back), read fresh steps and send them over.
+document.addEventListener("DOMContentLoaded", () => run(true));
+if (P().App) P().App.addListener("resume", () => { autoOpened = false; run(true); });
+</script>
+</body>
+</html>

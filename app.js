@@ -294,6 +294,7 @@ function exerciseSectionHTML() {
       <div class="steps-row">
         <label for="steps-input">👣 Steps</label>
         <input id="steps-input" type="number" inputmode="numeric" placeholder="from Google Fit" value="${st ? esc(st.steps) : ""}">
+        ${st?.source ? `<span class="steps-note">Synced from ${esc(st.source)} by the Android app</span>` : ""}
         <button class="btn small" data-action="save-steps">Save</button>
         <span class="steps-note muted">Walks are already in your steps, so don't also add them as exercise.</span>
         ${sb ? `<span class="steps-note">${sb.burned ? `🔥 ${sb.burned} kcal from steps over your usual ${sb.base.toLocaleString()}` : `Within your usual ${sb.base.toLocaleString()} steps, already counted`}</span>` : ""}
@@ -510,6 +511,12 @@ function renderSettings() {
       <div class="btn-row"><button class="btn" data-action="goals">${state.goals ? "Change my goals" : "Set my goals"}</button></div>
     </section>
     <section class="card">
+      <h2>Android app 🤖</h2>
+      <p>Reads your steps from Google Fit (through Health Connect) and sends them to Munchkin automatically each time you open it.</p>
+      <div class="btn-row"><a class="btn" href="https://github.com/dstephanova/munchkin/releases/latest/download/munchkin.apk">Download for Android</a></div>
+      <p class="help">After downloading, open the file to install. Your phone may ask you to allow installing apps from your browser; that's normal for apps not from the Play Store.</p>
+    </section>
+    <section class="card">
       <h2>Backup</h2>
       <p>Download your whole diary (meals, exercise, water, goals) as a file, just in case. You can load it back any time.</p>
       <div class="btn-row">
@@ -709,6 +716,26 @@ function waterHTML() {
     <p class="help">One glass = 250 ml. ${state.goals?.profile?.weight ? "Goal from your weight." : "Set your weight in Goals for a personal goal."}</p>
   </section>`;
 }
+
+// ---------- steps sent by the Android app ----------
+// The Android app opens Munchkin with ?sync=health&date=…&steps=…&active=…
+function readHealthLink() {
+  const q = new URLSearchParams(location.search);
+  if (q.get("sync") !== "health") return;
+  const data = { date: q.get("date"), steps: Math.round(Number(q.get("steps")) || 0), active: Math.round(Number(q.get("active")) || 0) };
+  try { sessionStorage.setItem("munchkin.health", JSON.stringify(data)); } catch {}
+  history.replaceState(null, "", location.pathname + (demo ? "?demo" : ""));
+}
+async function applyHealthLink() {
+  let data = null;
+  try { data = JSON.parse(sessionStorage.getItem("munchkin.health") || "null"); sessionStorage.removeItem("munchkin.health"); } catch {}
+  if (!data || !/^\d{4}-\d{2}-\d{2}$/.test(data.date || "") || data.date > iso(new Date())) return;
+  try {
+    await store.save({ id: `steps-${data.date}`, type: "steps", date: data.date, steps: data.steps, active: data.active, source: "Google Fit", createdAt: Date.now(), updatedAt: Date.now() });
+    toast(`👣 ${data.steps.toLocaleString()} steps synced from Google Fit`);
+  } catch { toast("Couldn't save your steps. Try again."); }
+}
+readHealthLink();
 
 // ---------- keys on the account (optional) ----------
 async function syncKeysUp() {
@@ -1361,6 +1388,7 @@ async function start() {
     watchDay();
     if (unsubGoals) unsubGoals();
     syncKeysDown();
+    applyHealthLink();
     unsubGoals = store.watchGoals((g) => { state.goals = g; if (state.view === "day" || state.view === "settings") render(); refreshWeek(); });
     render();
   });

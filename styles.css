@@ -612,3 +612,4 @@ label.btn { cursor: pointer; display: inline-flex; align-items: center; }
 .welcome li small { color: var(--muted); font-size: .82rem; }
 .welcome li.done strong { text-decoration: line-through; opacity: .6; }
 .steps-note.muted { font-weight: 600; opacity: .85; }
+a.btn { text-decoration: none; display: inline-flex; align-items: center; }
