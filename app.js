@@ -885,6 +885,31 @@ document.addEventListener("paste", (ev) => {
   addChatPhoto(items.map((it) => it.getAsFile()));
 });
 
+// "Just add it for dinner", "move this to yesterday": the AI tells us, the app does it.
+function resolveDay(day) {
+  const today = iso(new Date());
+  if (!day || day === "today") return today;
+  if (day === "yesterday") return shiftDate(today, -1);
+  return /^\d{4}-\d{2}-\d{2}$/.test(day) && day <= today ? day : today;
+}
+async function applyAction(m, act) {
+  const slot = act.slot || m.slot || defaultSlot();
+  const date = act.day ? resolveDay(act.day) : (m.askOnly ? iso(new Date()) : m.date);
+  if (m.askOnly) {
+    if (!act.add) return;
+    if (!m.items.length) { toast("Nothing to add yet. Ask about a food first."); return; }
+    m.askOnly = false; m.slot = slot; m.date = date; m.createdAt = Date.now();
+    if (state.askMeal === m) state.askMeal = null;
+    try { await saveMeal(m); toast(`Added to ${SLOT_NAME[slot].toLowerCase()}${date === iso(new Date()) ? " today" : `, ${prettyDate(date).toLowerCase()}`} 🐱`); }
+    catch { toast("Couldn't save. Try again."); }
+  } else {
+    const moved = slot !== m.slot || date !== m.date;
+    m.slot = slot; m.date = date;
+    if (moved) toast(`Moved to ${SLOT_NAME[slot].toLowerCase()}, ${prettyDate(date).toLowerCase()}`);
+  }
+  if (state.meal === m) render();
+}
+
 async function runAI() {
   const m = state.meal;
   if (!demo && !hasKey()) {
@@ -907,6 +932,7 @@ async function runAI() {
     m.name = res.name;
     m.items = res.items;
     state.sending = false;
+    if (res.action) await applyAction(m, res.action);
     if (state.meal === m) { render(); scrollToEnd(); }
     if (!m.askOnly) { try { await saveMeal(m); } catch { toast("Couldn't save. It will retry when you're online."); } }
   } catch (e) {

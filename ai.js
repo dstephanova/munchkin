@@ -35,7 +35,8 @@ The person tells you or shows you what they ate, and may correct you afterwards.
 - For plain basic foods, use your own knowledge. If the photo is a nutrition label, read it.
 - When corrected, treat the correction as fact and give the updated numbers.
 - If it isn't food, say so kindly. Never lecture about diet.
-- Use simple formatting: short paragraphs, "* " bullet lines and **bold** are fine; no tables.`;
+- Use simple formatting: short paragraphs, "* " bullet lines and **bold** are fine; no tables.
+- The app itself can add food to the diary and move it between meals and days. If the person asks you to add, log, save or move it (e.g. "just add it for dinner", "move this to yesterday"), never say you can't: just confirm in one short sentence (e.g. "Done, added to dinner!") and the app takes care of it.`;
 
 // Step 2: a quick, cheap model turns that answer into numbers for the calorie card, plus tap-answers.
 const EXTRACT_RULES = `You turn a food-diary chat into numbers. Read the chat below between a person and Munchkin (a food helper).
@@ -44,8 +45,9 @@ Using Munchkin's LAST answer (and earlier messages for context), list the FULL m
 - If a macro is missing, estimate it sensibly. If nothing edible was eaten, return "items": [].
 - "questions": for EACH question Munchkin's last answer asks the person (max 3), give the question shortened (max 40 characters) and 2-4 very short tap-answers they could send back (max 30 characters each). Use the person's language. If Munchkin asks nothing, [].
 - "name": short meal name in the person's language, max 5 words.
+- "action": ONLY if the person's LAST message asks to add / log / save the food, or to move it to a meal or day, return {"add": true, "slot": "breakfast" | "lunch" | "dinner" | "snack" | null, "day": "today" | "yesterday" | "YYYY-MM-DD" | null}. Otherwise null.
 Reply with ONLY this JSON:
-{"name": "", "estimate": false, "questions": [{"question": "Which pack?", "options": ["500 g pack", "1 kg pack"]}], "items": [{"name": "food item", "amount": "e.g. 300 g", "calories": 0, "protein": 0, "carbs": 0, "fat": 0}]}`;
+{"name": "", "estimate": false, "action": null, "questions": [{"question": "Which pack?", "options": ["500 g pack", "1 kg pack"]}], "items": [{"name": "food item", "amount": "e.g. 300 g", "calories": 0, "protein": 0, "carbs": 0, "fat": 0}]}`;
 
 function cleanJSON(text) {
   try { return JSON.parse(text); } catch {}
@@ -206,6 +208,11 @@ function toContents(turns, photoDataUrl) {
 async function fakeChat(turns, photo) {
   await new Promise((r) => setTimeout(r, 700));
   const last = (turns[turns.length - 1]?.text || "").toLowerCase();
+  const slotWord = ["breakfast", "lunch", "dinner", "snack"].find((w) => last.includes(w));
+  if (/\b(add|move|log)\b/.test(last) && slotWord) {
+    return { ...normalise({ reply: `Done, added to ${slotWord}!`, meal: { name: "Croissant", items: [{ name: "Croissant", amount: "1 medium", calories: 270, protein: 5, carbs: 31, fat: 14 }] } }),
+      action: { add: true, slot: slotWord, day: /yesterday/.test(last) ? "yesterday" : "today" } };
+  }
   if (turns.length > 1 && /half/.test(last)) {
     return normalise({ reply: "Got it, half a portion! I've halved everything.", meal: { name: "Chicken salad (half)", items: [
       { name: "Grilled chicken", amount: "60 g", calories: 99, protein: 19, carbs: 0, fat: 2 },
@@ -267,7 +274,8 @@ export async function askAI(turns, photoDataUrl, { demo = false, onStatus = () =
   onStatus("Counting the calories…");
   const transcript = [...turns, { role: "model", text: reply }].slice(-12)
     .map((t) => `${t.role === "model" ? "Munchkin" : "Person"}: ${t.photo || t.photos?.length ? "(sent photos) " : ""}${t.text || (t.role === "model" ? "" : "(sent a photo)")}`).join("\n\n");
-  const before = meal && meal.items?.length ? `\n\nPrevious numbers (may be outdated): ${JSON.stringify({ name: meal.name, items: meal.items })}` : "";
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const before = (meal && meal.items?.length ? `\n\nPrevious numbers (may be outdated): ${JSON.stringify({ name: meal.name, items: meal.items })}` : "") + `\n\nToday's date: ${todayStr}.`;
   let numbers = null;
   for (const model of [models.fast, chatModel]) {
     try {
@@ -280,6 +288,14 @@ export async function askAI(turns, photoDataUrl, { demo = false, onStatus = () =
         const m = parsed.meal || parsed;
         numbers = normalise({ reply, meal: m });
         numbers.estimate = !!m.estimate;
+        const act = m.action;
+        if (act && typeof act === "object" && (act.add || act.slot || act.day)) {
+          numbers.action = {
+            add: !!act.add,
+            slot: ["breakfast", "lunch", "dinner", "snack"].includes(act.slot) ? act.slot : null,
+            day: typeof act.day === "string" ? act.day : null,
+          };
+        }
         numbers.questions = (Array.isArray(m.questions) ? m.questions : [])
           .map((q) => ({
             question: String(q?.question || "").slice(0, 60),
