@@ -42,10 +42,10 @@ const EXTRACT_RULES = `You turn a food-diary chat into numbers. Read the chat be
 Using Munchkin's LAST answer (and earlier messages for context), list the FULL meal the person ate with Munchkin's estimates.
 - If a range or several options are given and the person hasn't chosen yet, use the middle / most typical one and set "estimate": true.
 - If a macro is missing, estimate it sensibly. If nothing edible was eaten, return "items": [].
-- "options": if Munchkin's last answer asks the person a question, give 2-4 very short tap-answers they could send back (max 30 characters each, in the person's language, e.g. "500 g pack", "1 kg pack", "About half"). Otherwise [].
+- "questions": for EACH question Munchkin's last answer asks the person (max 3), give the question shortened (max 40 characters) and 2-4 very short tap-answers they could send back (max 30 characters each). Use the person's language. If Munchkin asks nothing, [].
 - "name": short meal name in the person's language, max 5 words.
 Reply with ONLY this JSON:
-{"name": "", "estimate": false, "options": [], "items": [{"name": "food item", "amount": "e.g. 300 g", "calories": 0, "protein": 0, "carbs": 0, "fat": 0}]}`;
+{"name": "", "estimate": false, "questions": [{"question": "Which pack?", "options": ["500 g pack", "1 kg pack"]}], "items": [{"name": "food item", "amount": "e.g. 300 g", "calories": 0, "protein": 0, "carbs": 0, "fat": 0}]}`;
 
 function cleanJSON(text) {
   try { return JSON.parse(text); } catch {}
@@ -191,8 +191,8 @@ function sourcesOf(cand) {
 function toContents(turns, photoDataUrl) {
   return turns.map((t, i) => {
     const parts = [];
-    const photo = t.photo || (i === 0 ? photoDataUrl : null);
-    if (photo) {
+    const pics = [i === 0 ? photoDataUrl : null, ...(t.photos || []), t.photo].filter(Boolean);
+    for (const photo of pics) {
       const [head, b64] = photo.split(",");
       const mime = (head.match(/data:(.*?);/) || [])[1] || "image/jpeg";
       parts.push({ inline_data: { mime_type: mime, data: b64 } });
@@ -218,7 +218,10 @@ async function fakeChat(turns, photo) {
       { name: "Margherita pizza", amount: "2 slices", calories: 540, protein: 22, carbs: 66, fat: 20 },
     ] } });
   }
-  return { estimate: true, options: ["Bigger bowl", "Smaller bowl", "Normal bowl"], ...normalise({ reply: (photo ? "That looks like a **chicken salad** with a light dressing. " : "Sounds like a chicken salad! ") + "I guessed a normal bowl. Was it bigger or smaller?", meal: { name: "Chicken salad", items: [
+  return { estimate: true, questions: [
+    { question: "How big was the bowl?", options: ["Bigger bowl", "Normal bowl", "Smaller bowl"] },
+    { question: "Any dressing?", options: ["Olive oil", "Caesar", "No dressing"] },
+  ], ...normalise({ reply: (photo ? "That looks like a **chicken salad** with a light dressing. " : "Sounds like a chicken salad! ") + "I guessed a normal bowl. Was it bigger or smaller?", meal: { name: "Chicken salad", items: [
     { name: "Grilled chicken", amount: "120 g", calories: 198, protein: 37, carbs: 0, fat: 4 },
     { name: "Mixed leaves & veg", amount: "120 g", calories: 30, protein: 2, carbs: 6, fat: 0 },
     { name: "Olive oil dressing", amount: "1 tbsp", calories: 119, protein: 0, carbs: 0, fat: 14 },
@@ -263,7 +266,7 @@ export async function askAI(turns, photoDataUrl, { demo = false, onStatus = () =
   // Step 2
   onStatus("Counting the calories…");
   const transcript = [...turns, { role: "model", text: reply }].slice(-12)
-    .map((t) => `${t.role === "model" ? "Munchkin" : "Person"}: ${t.photo ? "(sent a photo) " : ""}${t.text || (t.role === "model" ? "" : "(sent a photo)")}`).join("\n\n");
+    .map((t) => `${t.role === "model" ? "Munchkin" : "Person"}: ${t.photo || t.photos?.length ? "(sent photos) " : ""}${t.text || (t.role === "model" ? "" : "(sent a photo)")}`).join("\n\n");
   const before = meal && meal.items?.length ? `\n\nPrevious numbers (may be outdated): ${JSON.stringify({ name: meal.name, items: meal.items })}` : "";
   let numbers = null;
   for (const model of [models.fast, chatModel]) {
@@ -277,7 +280,13 @@ export async function askAI(turns, photoDataUrl, { demo = false, onStatus = () =
         const m = parsed.meal || parsed;
         numbers = normalise({ reply, meal: m });
         numbers.estimate = !!m.estimate;
-        numbers.options = (Array.isArray(m.options) ? m.options : []).map((o) => String(o).slice(0, 40)).filter(Boolean).slice(0, 4);
+        numbers.questions = (Array.isArray(m.questions) ? m.questions : [])
+          .map((q) => ({
+            question: String(q?.question || "").slice(0, 60),
+            options: (Array.isArray(q?.options) ? q.options : []).map((o) => String(o).slice(0, 40)).filter(Boolean).slice(0, 4),
+          }))
+          .filter((q) => q.options.length)
+          .slice(0, 3);
         break;
       }
       report.push(`${model} (numbers): came out jumbled`);

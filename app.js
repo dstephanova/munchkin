@@ -1,3 +1,4 @@
+import { openViewer } from "./viewer.js";
 import { catSVG } from "./cat.js";
 import { createStore } from "./store.js";
 import { askAI, hasKey, loadAISettings, saveAISettings, pickGeminiModels, PROVIDERS } from "./ai.js";
@@ -51,6 +52,11 @@ function stopAIStatus() {
 }
 
 // ---------- little helpers ----------
+// The painted Munchkin picture (big for the home and login screens, small for icons).
+function catPic(size = "big", label = "Munchkin the cat") {
+  const src = size === "big" ? "img/munchkin-480.webp" : "img/munchkin-160.webp";
+  return `<img class="cat-pic" src="${src}" alt="${label}" draggable="false">`;
+}
 function iso(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
@@ -127,7 +133,7 @@ const ICON = {
 // ---------- screens ----------
 function render() {
   if (state.view === "loading") {
-    $app.innerHTML = `<div class="login"><div class="inner"><div class="hero-cat">${catSVG()}</div><p>Waking Munchkin up…</p></div></div>`;
+    $app.innerHTML = `<div class="login"><div class="inner"><div class="hero-cat">${catPic()}</div><p>Waking Munchkin up…</p></div></div>`;
     return;
   }
   if (state.view === "login") return renderLogin();
@@ -140,7 +146,7 @@ function renderLogin() {
   $app.innerHTML = `
   <main class="login">
     <div class="inner">
-      <div class="hero-cat">${catSVG()}</div>
+      <div class="hero-cat">${catPic()}</div>
       <h1>Munchkin</h1>
       <p>Snap what you eat. Munchkin guesses the calories, and you fix anything by chatting.</p>
       <button class="google-btn" data-action="signin">${ICON.google} Log in with Google</button>
@@ -169,7 +175,7 @@ function renderDay() {
         ${list.map((m) => {
           const mt = sumItems(m.items);
           return `<button class="meal-card" data-action="open-meal" data-id="${esc(m.id)}">
-            ${m.photo ? `<img class="thumb" src="${esc(m.photo)}" alt="">` : `<span class="thumb">${catSVG({ label: "" })}</span>`}
+            ${m.photo ? `<img class="thumb" src="${esc(m.photo)}" alt="Open photo" data-action="view-thumb" data-id="${esc(m.id)}">` : `<span class="thumb">${catPic("small", "")}</span>`}
             <span class="info"><span class="name">${esc(m.name || "Meal")}</span>
               <span class="mini">P ${mt.protein}g · C ${mt.carbs}g · F ${mt.fat}g</span></span>
             <span class="kc">${mt.calories} kcal</span>
@@ -183,7 +189,7 @@ function renderDay() {
   $app.innerHTML = `
   <main class="screen">
     <header class="topbar">
-      <span class="logo-cat">${catSVG({ label: "" })}</span>
+      <span class="logo-cat">${catPic("small", "")}</span>
       <h1>Munchkin</h1>
       <span class="spacer"></span>
       <button class="icon-btn" data-action="settings" aria-label="Settings">${ICON.gear}</button>
@@ -195,7 +201,7 @@ function renderDay() {
       <button class="icon-btn" data-action="next-day" aria-label="Next day" ${isToday ? "disabled" : ""}>${ICON.next}</button>
     </nav>
     <section class="summary">
-      <div class="cat-wrap">${catSVG()}</div>
+      <div class="cat-wrap">${catPic()}</div>
       <div>
         <div class="kcal">${t.calories}<small>kcal</small></div>
         <p class="bubble">${bubble}</p>
@@ -218,7 +224,7 @@ function sheetHTML() {
       </div>
       <div class="big-actions">
         <label class="big-action">${ICON.camera}<span>Take photo</span><input type="file" id="pick-camera" accept="image/*" capture="environment"></label>
-        <label class="big-action">${ICON.image}<span>From gallery</span><input type="file" id="pick-gallery" accept="image/*"></label>
+        <label class="big-action">${ICON.image}<span>From gallery</span><input type="file" id="pick-gallery" accept="image/*" multiple></label>
         <button class="big-action" data-action="type-meal">${ICON.pen}<span>Type it</span></button>
       </div>
     </div>
@@ -236,13 +242,25 @@ function renderMeal() {
     if (c.role === "model") {
       const src = (c.sources || []).length ? `<span class="sources">🔎 Checked: ${c.sources.map((x) => `<a href="${esc(x.uri)}" target="_blank" rel="noopener">${esc(x.title)}</a>`).join(", ")}</span>` : "";
       const isLast = i === m.chat.length - 1 && !state.sending;
-      const chips = isLast && (c.options || []).length
-        ? `<div class="quick-replies">${c.options.map((o) => `<button class="chip" data-action="quick" data-text="${esc(o)}">${esc(o)}</button>`).join("")}</div>` : "";
+      const qs = c.questions || (c.options?.length ? [{ question: "", options: c.options }] : []);
+      let chips = "";
+      if (isLast && qs.length === 1) {
+        chips = `<div class="quick-replies">${qs[0].options.map((o) => `<button class="chip" data-action="quick" data-text="${esc(o)}">${esc(o)}</button>`).join("")}</div>`;
+      } else if (isLast && qs.length > 1) {
+        const picked = state.answers || {};
+        chips = `<div class="quick-replies multi">${qs.map((q, qi) => `
+          <div class="q-group"><span class="q-label">${esc(q.question)}</span>
+            <div class="q-opts">${q.options.map((o) => `<button class="chip" data-action="pick-answer" data-q="${qi}" data-text="${esc(o)}" aria-pressed="${picked[qi] === o}">${esc(o)}</button>`).join("")}</div>
+          </div>`).join("")}
+          <button class="btn" data-action="send-answers" ${Object.keys(picked).length ? "" : "disabled"}>Send answers</button>
+        </div>`;
+      }
       return `<div class="model-row"><span class="mini-cat">${catSVG({ label: "", head: true })}</span><div class="msg model">${pretty(c.text)}${src}</div></div>${chips}`;
     }
     const txt = c.text || "";
-    const note = i === 0 && m.photo && !m.photoFromChat && !c.photo ? `<span class="photo-note">📷 photo sent</span>` : "";
-    const pic = c.photo ? `<img class="chat-photo" src="${esc(c.photo)}" alt="Photo you sent">` : "";
+    const cPics = [c.photo, ...(c.photos || [])].filter(Boolean);
+    const note = i === 0 && m.photo && !m.photoFromChat ? `<span class="photo-note">📷 photo sent</span>` : "";
+    const pic = cPics.length ? `<div class="chat-photos n${Math.min(cPics.length, 3)}">${cPics.map((ph) => `<img class="chat-photo" src="${esc(ph)}" alt="Photo you sent" data-action="view-photo" data-src="${esc(ph)}">`).join("")}</div>` : "";
     return `<div class="msg user">${pic}${txt ? esc(txt) : (pic ? "" : "What's this?")}${note}</div>`;
   }).join("");
 
@@ -261,7 +279,7 @@ function renderMeal() {
       ${macrosHTML(t)}
       <ul class="items">${m.items.map((it) => `<li><span>${esc(it.name)} <em>${esc(it.amount)}</em></span><span>${it.calories} kcal</span></li>`).join("")}</ul>
     </section>` : ""}
-    ${m.photo ? `<div class="meal-photo"><img src="${esc(m.photo)}" alt="Your meal photo"></div>` : ""}
+    ${m.photo ? `<button class="meal-photo" data-action="view-photo" data-src="${esc(m.photo)}" aria-label="Open photo full screen"><img src="${esc(m.photo)}" alt="Your meal photo"></button>` : ""}
     <div class="chips slot-row" aria-label="Meal time">
       ${SLOTS.map(([id, label]) => `<button class="chip" data-action="meal-slot" data-slot="${id}" aria-pressed="${m.slot === id}">${label}</button>`).join("")}
     </div>
@@ -274,9 +292,9 @@ function renderMeal() {
     </section>
   </main>
   <div class="composer">
-    ${state.pendingPhoto ? `<div class="pending-photo"><img src="${esc(state.pendingPhoto)}" alt="Photo to send"><span>Photo ready to send</span><button class="icon-btn" data-action="drop-photo" aria-label="Remove photo">✕</button></div>` : ""}
+    ${(state.pendingPhotos || []).length ? `<div class="pending-photo">${state.pendingPhotos.map((ph, i) => `<span class="pend"><img src="${esc(ph)}" alt="Photo to send" data-action="view-photo" data-src="${esc(ph)}"><button data-action="drop-photo" data-i="${i}" aria-label="Remove photo">✕</button></span>`).join("")}<span class="pend-note">${state.pendingPhotos.length} ready to send</span></div>` : ""}
     <form data-form="chat">
-      <label class="photo-btn" aria-label="Add a photo">${ICON.camera}<input type="file" id="pick-chat-photo" accept="image/*"></label>
+      <label class="photo-btn" aria-label="Add a photo">${ICON.camera}<input type="file" id="pick-chat-photo" accept="image/*" multiple></label>
       <textarea id="composer" rows="1" placeholder="${esc(placeholder)}" aria-label="Message to Munchkin"></textarea>
       <button class="send-btn" type="submit" aria-label="Send" ${state.sending ? "disabled" : ""}>${ICON.send}</button>
     </form>
@@ -325,7 +343,7 @@ function renderSettings() {
 
 function autoGrow(ta) {
   ta.style.height = "auto";
-  ta.style.height = Math.min(ta.scrollHeight, 120) + "px";
+  ta.style.height = Math.min(ta.scrollHeight, 160) + "px";
 }
 function scrollToEnd() {
   requestAnimationFrame(() => window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" }));
@@ -340,7 +358,7 @@ function go(view) {
     state.confirmDelete = false;
     state.composer = "";
     state.sending = false;
-    state.pendingPhoto = null;
+    state.pendingPhotos = [];
     render();
     return;
   }
@@ -404,28 +422,35 @@ async function saveMeal(m) {
 function sendMessage(text) {
   const m = state.meal;
   if (!m || state.sending) return;
-  const photo = state.pendingPhoto;
-  if (!text && !photo && !(m.chat.length === 0 && m.photo)) return;
+  const photos = state.pendingPhotos || [];
+  if (!text && !photos.length && !(m.chat.length === 0 && m.photo)) return;
   const turn = { role: "user", text: text || "" };
-  if (photo) {
-    turn.photo = photo;
-    if (!m.photo) { m.photo = photo; m.photoFromChat = true; } // also the meal's picture
+  if (photos.length) {
+    turn.photos = photos;
+    if (!m.photo) { m.photo = photos[0]; m.photoFromChat = true; } // first one is also the meal's picture
   }
   m.chat.push(turn);
   state.composer = "";
-  state.pendingPhoto = null;
+  state.pendingPhotos = [];
   runAI();
 }
 
 // Photos added inside the chat: camera/gallery button or paste (Ctrl+V).
-async function addChatPhoto(file) {
-  if (!file || !state.meal) return;
-  const count = state.meal.chat.filter((c) => c.photo).length + (state.meal.photo ? 1 : 0);
-  if (count >= 6) { toast("That's the photo limit for one meal (6)."); return; }
-  try {
-    state.pendingPhoto = await readPhoto(file, 640);
-  } catch {
-    toast("Couldn't open that photo. Try another one."); return;
+function mealPhotos(m) {
+  if (!m) return [];
+  return [m.photo, ...(m.chat || []).flatMap((c) => [c.photo, ...(c.photos || [])])].filter((x, i, arr) => x && arr.indexOf(x) === i);
+}
+const PHOTO_LIMIT = 8;
+async function addChatPhoto(files) {
+  if (!state.meal) return;
+  state.pendingPhotos = state.pendingPhotos || [];
+  for (const file of files) {
+    if (!file) continue;
+    if (mealPhotos(state.meal).length + state.pendingPhotos.length >= PHOTO_LIMIT) {
+      toast(`That's the photo limit for one meal (${PHOTO_LIMIT}).`); break;
+    }
+    try { state.pendingPhotos.push(await readPhoto(file, 640)); }
+    catch { toast("Couldn't open one of those photos."); }
   }
   const ta = document.getElementById("composer");
   if (ta) state.composer = ta.value;
@@ -434,10 +459,10 @@ async function addChatPhoto(file) {
 }
 document.addEventListener("paste", (ev) => {
   if (state.view !== "meal") return;
-  const item = [...(ev.clipboardData?.items || [])].find((it) => it.type.startsWith("image/"));
-  if (!item) return;
+  const items = [...(ev.clipboardData?.items || [])].filter((it) => it.type.startsWith("image/"));
+  if (!items.length) return;
   ev.preventDefault();
-  addChatPhoto(item.getAsFile());
+  addChatPhoto(items.map((it) => it.getAsFile()));
 });
 
 async function runAI() {
@@ -455,7 +480,8 @@ async function runAI() {
     const turns = m.chat.slice(-24);
     const res = await askAI(turns, m.chat.length <= 24 && !m.photoFromChat ? m.photo : null, { demo, onStatus: setAIStatus, meal: { name: m.name, items: m.items } });
     stopAIStatus();
-    m.chat.push({ role: "model", text: res.reply, sources: res.sources || [], options: res.options || [] });
+    m.chat.push({ role: "model", text: res.reply, sources: res.sources || [], questions: res.questions || [] });
+    state.answers = {};
     m.estimate = !!res.estimate;
     if (res.countFailed) toast("Couldn't update the numbers this time. Send a message to try again.");
     m.name = res.name;
@@ -515,10 +541,37 @@ $app.addEventListener("click", async (ev) => {
     state.meal.slot = el.dataset.slot;
     render();
     if (!state.meal._draft) { try { await saveMeal(state.meal); toast(`Moved to ${SLOT_NAME[state.meal.slot].toLowerCase()}`); } catch { toast("Couldn't save that change."); } }
+  } else if (a === "view-photo") {
+    const m = state.meal;
+    const all = [...mealPhotos(m), ...(state.pendingPhotos || [])].filter((x, i, arr) => arr.indexOf(x) === i);
+    if (!all.includes(el.dataset.src)) all.push(el.dataset.src);
+    openViewer(all, all.indexOf(el.dataset.src));
+  } else if (a === "view-thumb") {
+    ev.stopPropagation();
+    const m = state.meals.find((x) => x.id === el.dataset.id);
+    if (m) {
+      const all = mealPhotos(m);
+      openViewer(all, 0);
+    }
   } else if (a === "drop-photo") {
-    state.pendingPhoto = null;
+    state.pendingPhotos = (state.pendingPhotos || []).filter((_, i) => i !== Number(el.dataset.i));
     const ta = document.getElementById("composer"); if (ta) state.composer = ta.value;
     render();
+  } else if (a === "pick-answer") {
+    state.answers = state.answers || {};
+    const q = el.dataset.q;
+    if (state.answers[q] === el.dataset.text) delete state.answers[q]; else state.answers[q] = el.dataset.text;
+    const ta = document.getElementById("composer"); if (ta) state.composer = ta.value;
+    render();
+  } else if (a === "send-answers") {
+    const last = state.meal.chat[state.meal.chat.length - 1];
+    const qs = last?.questions || [];
+    const lines = Object.entries(state.answers || {}).sort(([x], [y]) => x - y)
+      .map(([qi, ans]) => (qs[qi]?.question ? `${qs[qi].question} ${ans}` : ans));
+    const extra = (document.getElementById("composer")?.value || "").trim();
+    if (extra) lines.push(extra);
+    state.answers = {};
+    sendMessage(lines.join("\n"));
   } else if (a === "quick") {
     sendMessage(el.dataset.text);
   } else if (a === "retry") {
@@ -566,7 +619,7 @@ $app.addEventListener("click", async (ev) => {
 $app.addEventListener("change", async (ev) => {
   const t = ev.target;
   if (t.id === "pick-chat-photo") {
-    addChatPhoto(t.files && t.files[0]);
+    addChatPhoto([...(t.files || [])]);
     return;
   }
   if (t.id === "pick-camera" || t.id === "pick-gallery") {
@@ -576,8 +629,10 @@ $app.addEventListener("change", async (ev) => {
     let photo;
     try { photo = await readPhoto(file); } catch { toast("Couldn't open that photo. Try another one."); render(); return; }
     state.meal = newMeal(photo);
-    state.error = null; state.composer = "";
+    state.error = null; state.composer = ""; state.pendingPhotos = [];
     go("meal");
+    const rest = [...t.files].slice(1);
+    if (rest.length) addChatPhoto(rest); // extra photos wait to be sent with the first message
   } else if (t.name === "provider") {
     const s = loadAISettings(); s.provider = t.value; saveAISettings(s);
   }
@@ -604,7 +659,7 @@ async function start() {
   try {
     store = await createStore({ demo });
   } catch {
-    $app.innerHTML = `<div class="login"><div class="inner"><div class="hero-cat">${catSVG()}</div><p>Munchkin couldn't connect. Check your internet and reopen the app.</p></div></div>`;
+    $app.innerHTML = `<div class="login"><div class="inner"><div class="hero-cat">${catPic()}</div><p>Munchkin couldn't connect. Check your internet and reopen the app.</p></div></div>`;
     return;
   }
   store.onUser((u) => {
