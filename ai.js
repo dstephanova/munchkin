@@ -305,3 +305,39 @@ function withReport(e, report) {
   if (report.length) e.message = `${e.message}\n\nWhat happened:\n• ${report.join("\n• ")}`;
   return e;
 }
+
+// ---------- exercise estimate ----------
+const EXERCISE_RULES = `You estimate calories burned by exercise for a food diary app.
+The person describes an activity. Work out a short name, the duration in minutes (if not said, assume a typical session), and the calories burned ON TOP OF resting (net, i.e. (MET - 1) x kg x hours), for their body weight.
+Reply with ONLY JSON: {"name": "short name in the person's language, max 4 words", "minutes": 0, "burned": 0, "note": "one short sentence on what you assumed, in the person's language"}`;
+
+export async function askExercise(text, kg, { demo = false } = {}) {
+  if (demo) {
+    await new Promise((r) => setTimeout(r, 500));
+    return { name: "Tennis", minutes: 60, burned: Math.round(6 * kg), note: "Assumed a friendly singles game." };
+  }
+  const s = loadAISettings();
+  const key = s.keys?.[s.provider];
+  if (!key) throw new AIError("nokey", "Add your Gemini key in Settings first.");
+  let models = s.models?.geminiSet;
+  if (!models || !Array.isArray(models.order) || !models.fast) {
+    models = await pickGeminiModels(key);
+    s.models = { ...(s.models || {}), geminiSet: models };
+    saveAISettings(s);
+  }
+  let lastErr;
+  for (const model of [models.fast, ...models.order].filter((m, i, a) => a.indexOf(m) === i)) {
+    try {
+      const r = await callGemini(key, model, {
+        system: EXERCISE_RULES, json: true, quick: true, timeoutMs: 25000,
+        contents: [{ role: "user", parts: [{ text: `Body weight: ${kg} kg.\nActivity: ${text}` }] }],
+      });
+      const j = cleanJSON(r.text);
+      if (j) return { name: String(j.name || "Exercise").slice(0, 40), minutes: Math.max(0, Math.round(Number(j.minutes) || 0)), burned: Math.max(0, Math.round(Number(j.burned) || 0)), note: String(j.note || "").slice(0, 160) };
+    } catch (e) {
+      lastErr = e;
+      if (e.kind === "key" || e.kind === "credit" || e.kind === "network") throw e;
+    }
+  }
+  throw lastErr || new AIError("busy", "Munchkin couldn't estimate that right now. Try again.");
+}

@@ -1,8 +1,8 @@
 import { openViewer } from "./viewer.js";
 import { catSVG } from "./cat.js";
-import { ACTIVITY, GOAL, suggestGoals } from "./goals.js";
+import { ACTIVITY, PACES, paceOf, paceOptions, safeMinimum, suggestGoals, KCAL_PER_KG, EXERCISES, EFFORT, exerciseBurn, stepsBurn } from "./goals.js";
 import { createStore } from "./store.js";
-import { askAI, hasKey, loadAISettings, saveAISettings, pickGeminiModels, PROVIDERS } from "./ai.js";
+import { askExercise, askAI, hasKey, loadAISettings, saveAISettings, pickGeminiModels, PROVIDERS } from "./ai.js";
 
 const demo = new URLSearchParams(location.search).has("demo");
 const $app = document.getElementById("app");
@@ -162,8 +162,16 @@ function renderLogin() {
   </main>`;
 }
 
+const isMealDoc = (d) => !d.type || d.type === "meal";
+function dayBurn(docs) {
+  const ex = docs.filter((d) => d.type === "exercise").reduce((n, d) => n + (d.burned || 0), 0);
+  const st = docs.find((d) => d.type === "steps");
+  const sb = st ? stepsBurn(st.steps, state.goals?.profile).burned : 0;
+  return { exercise: ex, steps: sb, total: ex + sb };
+}
+
 function renderDay() {
-  const meals = state.meals;
+  const meals = state.meals.filter(isMealDoc);
   const t = sumItems(meals.flatMap((m) => m.items || []));
   const isToday = state.date === iso(new Date());
   const bubble = meals.length === 0
@@ -210,25 +218,33 @@ function renderDay() {
       <button class="label" data-action="calendar" aria-label="Open calendar"><strong>${prettyDate(state.date)}</strong><span>${longDate(state.date)} · 📅</span></button>
       <button class="icon-btn" data-action="next-day" aria-label="Next day" ${isToday ? "disabled" : ""}>${ICON.next}</button>
     </nav>
-    ${summaryHTML(t, bubble)}
+    ${summaryHTML(t, bubble, dayBurn(state.meals))}
+    ${weekHTML()}
     ${slotsHTML}
+    ${exerciseSectionHTML()}
   </main>
-  <button class="fab" data-action="open-sheet">${ICON.plus} Add meal</button>
-  ${state.sheet ? sheetHTML() : ""}`;
+  <div class="fab-row">
+    <button class="fab-2" data-action="open-ex" aria-label="Add exercise">🏃 Exercise</button>
+    <button class="fab" data-action="open-sheet">${ICON.plus} Add meal</button>
+  </div>
+  ${state.sheet ? sheetHTML() : ""}
+  ${state.exSheet ? exSheetHTML() : ""}`;
 }
 
 function bar(value, goal, cls = "") {
   const pct = goal > 0 ? Math.min(100, Math.round((value / goal) * 100)) : 0;
   return `<div class="bar ${cls} ${value > goal ? "over" : ""}"><i style="width:${pct}%"></i></div>`;
 }
-function summaryHTML(t, bubble) {
-  const g = state.goals;
+function summaryHTML(t, bubble, burn = { total: 0 }) {
+  const g0 = state.goals;
+  const g = g0 ? { ...g0, calories: g0.calories + burn.total } : null;
   if (!g) {
     return `<section class="summary">
       <div class="cat-wrap">${catPic()}</div>
       <div>
         <div class="kcal">${t.calories}<small>kcal</small></div>
         <p class="bubble">${bubble}</p>
+        ${burn.total ? `<p class="burn-note">🔥 ${burn.total} kcal burned</p>` : ""}
         ${macrosHTML(t)}
         <button class="link-btn" data-action="goals">🎯 Set my daily goals</button>
       </div>
@@ -242,12 +258,108 @@ function summaryHTML(t, bubble) {
     <div class="ginfo">
       <div class="kcal">${t.calories}<small> / ${g.calories} kcal</small></div>
       <p class="bubble">${leftText}</p>
+      ${burn.total ? `<p class="burn-note">🔥 ${burn.total} kcal burned added to your goal (${g0.calories} + ${burn.total})</p>` : ""}
       ${bar(t.calories, g.calories, "big")}
     </div>
     <div class="macro-bars">
       ${row("protein", "Protein", "p")}${row("carbs", "Carbs", "c")}${row("fat", "Fat", "f")}
     </div>
   </section>`;
+}
+
+function exerciseSectionHTML() {
+  const ex = state.meals.filter((d) => d.type === "exercise").sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+  const st = state.meals.find((d) => d.type === "steps");
+  const sb = st ? stepsBurn(st.steps, state.goals?.profile) : null;
+  const emoji = (k) => (EXERCISES.find((e) => e[0] === k)?.[1] || "✨").split(" ")[0];
+  return `<section class="slot">
+    <div class="slot-head"><h2>Exercise</h2>${ex.length || sb?.burned ? `<span class="sum">🔥 ${dayBurn(state.meals).total} kcal</span>` : ""}</div>
+    <div class="meal-list">
+      ${ex.map((e) => state.confirmDeleteId === e.id
+        ? `<div class="meal-card confirm-row"><span class="info"><span class="name">Delete “${esc(e.name)}”?</span></span>
+           <span class="btn-row"><button class="btn danger small" data-action="home-delete" data-id="${esc(e.id)}">Delete</button><button class="btn ghost small" data-action="home-keep">Keep</button></span></div>`
+        : `<div class="meal-wrap"><button class="meal-card ex-card" data-action="edit-ex" data-id="${esc(e.id)}">
+          <span class="thumb ex-emoji">${emoji(e.kind)}</span>
+          <span class="info"><span class="name">${esc(e.name)}</span><span class="mini">${e.minutes} min${e.effort ? ` · ${esc((EFFORT.find((x) => x[0] === e.effort) || [, ""])[1].toLowerCase())}` : ""}</span></span>
+          <span class="kc">−${e.burned} kcal</span>
+        </button><button class="del-btn" data-action="home-ask-delete" data-id="${esc(e.id)}" aria-label="Delete ${esc(e.name)}">${ICON.trash}</button></div>`).join("")}
+      <div class="steps-row">
+        <label for="steps-input">👣 Steps</label>
+        <input id="steps-input" type="number" inputmode="numeric" placeholder="from Google Fit" value="${st ? esc(st.steps) : ""}">
+        <button class="btn small" data-action="save-steps">Save</button>
+        ${sb ? `<span class="steps-note">${sb.burned ? `🔥 ${sb.burned} kcal from steps over your usual ${sb.base.toLocaleString()}` : `Within your usual ${sb.base.toLocaleString()} steps, already counted`}</span>` : ""}
+      </div>
+      <button class="add-slot" data-action="open-ex">+ Add exercise</button>
+    </div>
+  </section>`;
+}
+
+function exSheetHTML() {
+  const x = state.exSheet;
+  const kg = Number(state.goals?.profile?.weight) || 65;
+  const preset = EXERCISES.find((e) => e[0] === x.kind);
+  const effortIdx = Math.max(0, EFFORT.findIndex((e) => e[0] === x.effort));
+  const auto = preset ? exerciseBurn(preset[2][effortIdx], Number(x.minutes) || 0, kg) : null;
+  const burned = x.custom ? x.burned : auto;
+  return `
+  <div class="sheet-backdrop" data-action="close-ex">
+    <div class="sheet" role="dialog" aria-label="Add exercise" data-stop>
+      <h3>${x.id ? "Edit exercise" : "Add exercise"}</h3>
+      <div class="ex-grid">
+        ${EXERCISES.map(([id, label]) => `<button class="chip" data-action="ex-kind" data-kind="${id}" aria-pressed="${x.kind === id && !x.custom}">${label}</button>`).join("")}
+      </div>
+      <div class="field-row two">
+        <div class="field"><label for="ex-min">Minutes</label><input id="ex-min" type="number" inputmode="numeric" value="${esc(x.minutes)}"></div>
+        <div class="field"><label>Effort</label><div class="chips">${EFFORT.map(([id, label]) => `<button class="chip" data-action="ex-effort" data-effort="${id}" aria-pressed="${x.effort === id}">${label}</button>`).join("")}</div></div>
+      </div>
+      <details class="ex-other" ${x.custom ? "open" : ""}>
+        <summary>Something else? Describe it</summary>
+        <div class="field"><textarea id="ex-desc" rows="2" placeholder="e.g. 1 hour of tennis, quite intense">${esc(x.desc || "")}</textarea></div>
+        <div class="btn-row"><button class="btn ghost small" data-action="ex-ask" ${x.asking ? "disabled" : ""}>${x.asking ? "Munchkin is thinking…" : "Ask Munchkin"}</button></div>
+        ${x.note ? `<p class="help">${esc(x.note)}</p>` : ""}
+      </details>
+      <div class="ex-result">
+        <span>${x.custom ? esc(x.name || "Exercise") : esc(preset ? preset[1].split(" ").slice(1).join(" ") : "Pick an exercise")}</span>
+        <strong>${burned != null ? `🔥 ${burned} kcal` : "—"}</strong>
+      </div>
+      <p class="help">Calories burned on top of resting, estimated from your weight (${kg} kg${state.goals?.profile?.weight ? "" : ", set it in Goals for better numbers"}).</p>
+      <div class="btn-row"><button class="btn" data-action="ex-save" ${burned == null ? "disabled" : ""}>${x.id ? "Save" : "Add"}</button><button class="btn ghost" data-action="close-ex">Cancel</button></div>
+    </div>
+  </div>`;
+}
+
+function weekHTML() {
+  const w = state.week;
+  if (!w || w.days < 2) return "";
+  const kg = w.kgWeek;
+  const pace = Math.abs(kg) < 0.05 ? "about steady" : `about ${kg > 0 ? "+" : "−"}${Math.abs(kg).toFixed(2)} kg a week`;
+  return `<p class="week-note">📈 Last 7 days: you averaged <strong>${w.avg} kcal</strong> a day${w.burn ? ` (minus ${w.burn} burned)` : ""} over ${w.days} logged days. At this pace that's <strong>${pace}</strong>. <span>Estimate. Water and salt make the scale jump around.</span></p>`;
+}
+let weekTimer = null;
+function refreshWeek() {
+  clearTimeout(weekTimer);
+  weekTimer = setTimeout(async () => {
+    const maint = state.goals?.maintenance;
+    if (!maint) { state.week = null; return; }
+    const end = iso(new Date()), start = shiftDate(end, -6);
+    try {
+      const docs = await store.getRange(start, end);
+      const byDay = {};
+      for (const d of docs) (byDay[d.date] ||= []).push(d);
+      const days = Object.values(byDay).filter((list) => list.some(isMealDoc));
+      if (!days.length) { state.week = null; }
+      else {
+        let eaten = 0, burn = 0;
+        for (const list of days) {
+          eaten += sumItems(list.filter(isMealDoc).flatMap((m) => m.items || [])).calories;
+          burn += dayBurn(list).total;
+        }
+        const avg = Math.round(eaten / days.length), avgBurn = Math.round(burn / days.length);
+        state.week = { days: days.length, avg, burn: avgBurn, kgWeek: ((avg - avgBurn - maint) * 7) / KCAL_PER_KG };
+      }
+    } catch { state.week = null; }
+    if (state.view === "day") render();
+  }, 800);
 }
 
 function sheetHTML() {
@@ -413,10 +525,12 @@ function renderGoals() {
         <div class="field"><label for="g-weight">Weight (kg)</label><input id="g-weight" type="number" inputmode="decimal" data-pf="weight" value="${esc(p.weight)}" placeholder="e.g. 60"></div>
       </div>
       <div class="field"><label>How active are you?</label>
+        <p class="help">“Exercise” means anything that makes you warm and a bit out of breath for at least 20 minutes: a brisk walk, gym, dancing, cycling, swimming. Normal moving around (housework, shopping, walking around the office) doesn't count, it's already included.</p>
         <div class="chips stack">${ACTIVITY.map(([id, label, sub]) => choice("activity", id, label, sub)).join("")}</div>
+        <p class="help">Logging workouts with the Exercise button? Then pick <strong>Mostly sitting</strong>, so they aren't counted twice.</p>
       </div>
       <div class="field"><label>Your goal</label>
-        <div class="chips">${GOAL.map(([id, label]) => choice("goal", id, label)).join("")}</div>
+        <div id="g-paces">${paceCards()}</div>
       </div>
     </section>
     <section class="card">
@@ -431,10 +545,23 @@ function renderGoals() {
     </section>
   </main>`;
 }
+function paceCards() {
+  const p = state.goalForm.profile;
+  const opts = paceOptions(p);
+  const cur = paceOf(p);
+  if (!opts) return `<p class="help">Fill in your age, height and weight to see your options.</p>`;
+  return `<div class="pace-list">${opts.map((o) => {
+    const week = o.kgWeek === 0 ? "keeps your weight steady" : `about ${o.kgWeek > 0 ? "+" : "−"}${Math.abs(o.kgWeek)} kg a week`;
+    return `<button class="pace ${o.tooLow ? "too-low" : ""}" data-action="goal-pick" data-field="pace" data-value="${o.id}" aria-pressed="${cur === o.id}" ${o.tooLow ? "disabled" : ""}>
+      <span class="pl"><strong>${o.label}</strong><small>${o.tooLow ? `Would go under the safe minimum of ${safeMinimum(p)} kcal` : week}</small></span>
+      <span class="pk">${o.tooLow ? "—" : `${o.calories}<small> kcal/day</small>`}</span>
+    </button>`;
+  }).join("")}</div>`;
+}
 function sugText() {
   const s = suggestGoals(state.goalForm.profile);
   if (!s) return "Fill in your age, height and weight and Munchkin will suggest your numbers.";
-  return `Munchkin suggests <strong>${s.calories} kcal</strong> a day (your body uses about ${s.maintenance} kcal a day to stay the same).`;
+  return `Munchkin suggests <strong>${s.calories} kcal</strong> a day. Your body uses about ${s.maintenance} kcal a day to stay the same.`;
 }
 function macroCheck() {
   const t = state.goalForm.targets;
@@ -455,7 +582,14 @@ function refreshGoalSuggestion() {
     }
   }
   const sug = document.getElementById("g-sug"); if (sug) sug.innerHTML = sugText();
+  const pc = document.getElementById("g-paces"); if (pc) pc.innerHTML = paceCards();
   const chk = document.getElementById("g-check"); if (chk) chk.textContent = macroCheck();
+}
+
+function keepExInputs() {
+  const x = state.exSheet; if (!x) return;
+  const m = document.getElementById("ex-min"); if (m) x.minutes = m.value;
+  const d = document.getElementById("ex-desc"); if (d) x.desc = d.value;
 }
 
 // ---------- calendar ----------
@@ -473,10 +607,12 @@ async function loadCalendarMonth() {
     const meals = await store.getRange(start, end);
     if (state.cal !== c || state.view !== "calendar") return;
     const days = {};
-    for (const m of meals) {
-      const t = sumItems(m.items || []);
-      const d = (days[m.date] ||= { calories: 0, meals: 0 });
-      d.calories += t.calories; d.meals += 1;
+    const byDay = {};
+    for (const m of meals) (byDay[m.date] ||= []).push(m);
+    for (const [date, list] of Object.entries(byDay)) {
+      const food = list.filter(isMealDoc);
+      if (!food.length) continue;
+      days[date] = { calories: sumItems(food.flatMap((m) => m.items || [])).calories, meals: food.length, burned: dayBurn(list).total };
     }
     c.days = days;
   } catch {
@@ -503,7 +639,8 @@ function renderCalendar() {
     const info = c.days?.[key];
     const future = key > today;
     if (info) { logged++; total += info.calories; }
-    const status = !info ? "" : goal ? (info.calories > goal * 1.05 ? "over" : info.calories >= goal * 0.85 ? "near" : "under") : "logged";
+    const dayGoal = goal + (info?.burned || 0);
+    const status = !info ? "" : goal ? (info.calories > dayGoal * 1.05 ? "over" : info.calories >= dayGoal * 0.85 ? "near" : "under") : "logged";
     cells += `<button class="cal-cell ${status} ${key === today ? "today" : ""} ${key === state.date ? "picked" : ""}" data-action="cal-day" data-date="${key}" ${future ? "disabled" : ""}>
       <span class="num">${day}</span>${info ? `<span class="ck">${info.calories}</span>` : ""}</button>`;
   }
@@ -568,6 +705,7 @@ function watchDay() {
   unsubDay = store.watchDay(state.date, (meals) => {
     state.meals = meals;
     if (state.view === "day") render();
+    refreshWeek();
   }, () => toast("Couldn't load your diary. Check your internet."));
 }
 
@@ -691,12 +829,54 @@ async function runAI() {
 $app.addEventListener("click", async (ev) => {
   const el = ev.target.closest("[data-action]");
   if (!el) return;
-  if (el.dataset.action === "close-sheet" && ev.target.closest("[data-stop]")) return;
+  if ((el.dataset.action === "close-sheet" || el.dataset.action === "close-ex") && el.classList.contains("sheet-backdrop") && ev.target.closest("[data-stop]")) return;
   const a = el.dataset.action;
 
   if (a === "signin") {
     state.loginError = "";
     try { await store.signIn(); } catch (e) { state.loginError = e.message; render(); }
+  } else if (a === "open-ex") {
+    state.exSheet = { kind: "walk", minutes: 30, effort: "moderate" }; render();
+  } else if (a === "close-ex") {
+    state.exSheet = null; render();
+  } else if (a === "edit-ex") {
+    const e = state.meals.find((d) => d.id === el.dataset.id);
+    if (e) { state.exSheet = { id: e.id, kind: e.kind, minutes: e.minutes, effort: e.effort || "moderate", custom: e.kind === "other", name: e.name, burned: e.burned, desc: e.desc || "", createdAt: e.createdAt }; render(); }
+  } else if (a === "ex-kind") {
+    keepExInputs(); Object.assign(state.exSheet, { kind: el.dataset.kind, custom: false }); render();
+  } else if (a === "ex-effort") {
+    keepExInputs(); state.exSheet.effort = el.dataset.effort; if (state.exSheet.custom) state.exSheet.custom = false; render();
+  } else if (a === "ex-ask") {
+    keepExInputs();
+    const x = state.exSheet;
+    if (!x.desc?.trim()) { toast("Describe what you did first."); return; }
+    x.asking = true; render();
+    try {
+      const r = await askExercise(x.desc, Number(state.goals?.profile?.weight) || 65, { demo });
+      Object.assign(x, { custom: true, kind: "other", name: r.name, minutes: r.minutes || x.minutes, burned: r.burned, note: r.note || "" });
+    } catch (e) { x.note = e.message || "Munchkin couldn't estimate that. Try again."; }
+    x.asking = false; if (state.exSheet === x) render();
+  } else if (a === "ex-save") {
+    keepExInputs();
+    const x = state.exSheet;
+    const kg = Number(state.goals?.profile?.weight) || 65;
+    const preset = EXERCISES.find((e) => e[0] === x.kind);
+    const effortIdx = Math.max(0, EFFORT.findIndex((e) => e[0] === x.effort));
+    const minutes = Math.round(Number(x.minutes) || 0);
+    const doc = x.custom
+      ? { kind: "other", name: x.name || "Exercise", minutes, effort: "", burned: Math.round(Number(x.burned) || 0), desc: x.desc || "" }
+      : { kind: x.kind, name: preset[1].split(" ").slice(1).join(" "), minutes, effort: x.effort, burned: exerciseBurn(preset[2][effortIdx], minutes, kg) };
+    const entry = { id: x.id || store.newId(), type: "exercise", date: state.date, ...doc, createdAt: x.createdAt || Date.now(), updatedAt: Date.now() };
+    state.exSheet = null; render();
+    try { await store.save(entry); toast(`🔥 ${entry.burned} kcal added`); } catch { toast("Couldn't save. Try again."); }
+  } else if (a === "save-steps") {
+    const v = Math.round(Number(document.getElementById("steps-input")?.value) || 0);
+    const id = `steps-${state.date}`;
+    try {
+      if (v > 0) await store.save({ id, type: "steps", date: state.date, steps: v, createdAt: Date.now(), updatedAt: Date.now() });
+      else await store.remove(id);
+      toast(v > 0 ? `👣 ${v.toLocaleString()} steps saved` : "Steps cleared");
+    } catch { toast("Couldn't save. Try again."); }
   } else if (a === "calendar") {
     openCalendar();
   } else if (a === "cal-month") {
@@ -729,7 +909,8 @@ $app.addEventListener("click", async (ev) => {
     if (t.calories < 800) { toast("Please set calories of at least 800."); return; }
     const p = { ...f.profile };
     try {
-      await store.saveGoals({ ...t, profile: p, edited: [...f.edited], updatedAt: Date.now() });
+      const sug = suggestGoals(p);
+      await store.saveGoals({ ...t, maintenance: sug?.maintenance || null, profile: p, edited: [...f.edited], updatedAt: Date.now() });
       toast("Goals saved 🎯");
       back();
     } catch { toast("Couldn't save. Check your internet and try again."); }
@@ -861,6 +1042,13 @@ $app.addEventListener("change", async (ev) => {
 
 $app.addEventListener("input", (ev) => {
   const t = ev.target;
+  if (t.id === "ex-min" && state.exSheet && !state.exSheet.custom) {
+    state.exSheet.minutes = t.value;
+    const x = state.exSheet, preset = EXERCISES.find((e) => e[0] === x.kind);
+    const out = document.querySelector(".ex-result strong");
+    if (preset && out) out.textContent = `🔥 ${exerciseBurn(preset[2][Math.max(0, EFFORT.findIndex((e) => e[0] === x.effort))], Number(t.value) || 0, Number(state.goals?.profile?.weight) || 65)} kcal`;
+    return;
+  }
   if (state.view === "goals" && t.dataset.pf) { state.goalForm.profile[t.dataset.pf] = t.value; refreshGoalSuggestion(); return; }
   if (state.view === "goals" && t.dataset.tg) {
     state.goalForm.targets[t.dataset.tg] = t.value;
@@ -907,7 +1095,7 @@ async function start() {
     state.view = "day";
     watchDay();
     if (unsubGoals) unsubGoals();
-    unsubGoals = store.watchGoals((g) => { state.goals = g; if (state.view === "day" || state.view === "settings") render(); });
+    unsubGoals = store.watchGoals((g) => { state.goals = g; if (state.view === "day" || state.view === "settings") render(); refreshWeek(); });
     render();
   });
   if ("serviceWorker" in navigator && !demo) {

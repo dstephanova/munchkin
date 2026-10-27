@@ -97,6 +97,11 @@ function memoryStore() {
       { role: "user", text: "example meal" },
       { role: "model", text: "Example entry so you can see how the diary looks." } ], createdAt: Date.now(), updatedAt: Date.now() });
   }
+  for (let back = 1; back <= 3; back++) {
+    const d = new Date(today); d.setDate(d.getDate() - back);
+    meals.set(`p${back}`, { id: `p${back}`, slot: "lunch", name: "Example day", date: iso(d), photo: null, chat: [],
+      items: [{ name: "Example food", amount: "", calories: 1200 + back * 80, protein: 70, carbs: 140, fat: 40 }], createdAt: Date.now(), updatedAt: Date.now() });
+  }
   let n = 0;
   return {
     demo: true,
