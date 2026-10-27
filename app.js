@@ -463,7 +463,8 @@ function renderMeal() {
   <div class="composer">
     ${(state.pendingPhotos || []).length ? `<div class="pending-photo">${state.pendingPhotos.map((ph, i) => `<span class="pend"><img src="${esc(ph)}" alt="Photo to send" data-action="view-photo" data-src="${esc(ph)}"><button data-action="drop-photo" data-i="${i}" aria-label="Remove photo">✕</button></span>`).join("")}<span class="pend-note">${state.pendingPhotos.length} ready to send</span></div>` : ""}
     <form data-form="chat">
-      <label class="photo-btn" aria-label="Add a photo">${ICON.camera}<input type="file" id="pick-chat-photo" accept="image/*" multiple></label>
+      <label class="photo-btn" aria-label="Take a photo">${ICON.camera}<input type="file" id="pick-chat-camera" accept="image/*" capture="environment"></label>
+      <label class="photo-btn" aria-label="Add photos from your gallery">${ICON.image}<input type="file" id="pick-chat-photo" accept="image/*" multiple></label>
       <textarea id="composer" rows="1" placeholder="${esc(placeholder)}" aria-label="Message to Munchkin"></textarea>
       <button class="send-btn" type="submit" aria-label="Send" ${state.sending ? "disabled" : ""}>${ICON.send}</button>
     </form>
@@ -892,6 +893,7 @@ function go(view) {
     state.sending = false;
     state.pendingPhotos = [];
     render();
+    rememberOpen();
     return;
   }
   history.pushState({ view }, "");
@@ -945,7 +947,7 @@ function newMeal(photo) {
 }
 
 async function saveMeal(m) {
-  const { _draft, ...clean } = m;
+  const { _draft, _retried, ...clean } = m;
   clean.totals = sumItems(clean.items);
   clean.updatedAt = Date.now();
   await store.save(clean);
@@ -966,6 +968,7 @@ function sendMessage(text) {
   state.composer = "";
   state.pendingPhotos = [];
   runAI();
+  rememberOpen();
 }
 
 // Photos added inside the chat: camera/gallery button or paste (Ctrl+V).
@@ -1023,8 +1026,43 @@ async function applyAction(m, act) {
   if (state.meal === m) render();
 }
 
+// ---------- remembering open chats (survives the phone closing Munchkin in the background) ----------
+const OPEN_KEY = "munchkin.open";
+const lastIsUser = (m) => m?.chat?.length && m.chat[m.chat.length - 1].role === "user";
+function rememberOpen() {
+  try {
+    const m = state.view === "meal" ? state.meal : null;
+    const keepMeal = m && (m._draft || m.askOnly || lastIsUser(m));
+    localStorage.setItem(OPEN_KEY, JSON.stringify({
+      at: Date.now(),
+      uid: state.user?.uid || null,
+      askMeal: state.askMeal || null,
+      meal: keepMeal ? m : null,
+      composer: keepMeal ? state.composer : "",
+    }));
+  } catch { /* storage full or blocked: nothing to do */ }
+}
+function restoreOpen() {
+  let data = null;
+  try { data = JSON.parse(localStorage.getItem(OPEN_KEY) || "null"); } catch {}
+  if (!data || data.uid !== state.user?.uid || Date.now() - data.at > 24 * 3600 * 1000) return;
+  if (data.askMeal && !state.askMeal) state.askMeal = data.askMeal;
+  const m = data.meal;
+  if (!m) return;
+  state.meal = m.askOnly && state.askMeal && state.askMeal.id === m.id ? state.askMeal : m;
+  state.composer = data.composer || "";
+  state.error = null; state.pendingPhotos = [];
+  go("meal");
+  if (lastIsUser(state.meal)) {
+    // The question never got its answer because Munchkin was closed: ask again.
+    toast("Your question got interrupted. Asking again…");
+    runAI();
+  }
+}
+
 async function runAI() {
   const m = state.meal;
+  state.leftWhileSending = false;
   if (!demo && !hasKey()) {
     state.error = { text: "Munchkin needs an AI key before it can guess food. Add one in Settings (Gemini's is free).", settings: true, retry: false };
     render(); scrollToEnd();
@@ -1046,20 +1084,47 @@ async function runAI() {
     m.items = res.items;
     state.sending = false;
     if (res.action) await applyAction(m, res.action);
+    m._retried = false;
     if (state.meal === m) { render(); scrollToEnd(); }
     if (!m.askOnly) { try { await saveMeal(m); } catch { toast("Couldn't save. It will retry when you're online."); } }
+    rememberOpen();
   } catch (e) {
     stopAIStatus();
     state.sending = false;
     if (state.meal !== m) return;
+    const interrupted = (state.leftWhileSending || document.hidden) && !["key", "nokey", "credit"].includes(e.kind);
+    if (interrupted && !m._retried) {
+      m._retried = true;
+      if (document.hidden) {
+        state.retryOnReturn = m;
+        state.error = { text: "Your question got interrupted when you left Munchkin. It will ask again when you're back.", retry: true };
+        render(); rememberOpen();
+      } else {
+        toast("Your question got interrupted. Asking again…");
+        runAI();
+      }
+      return;
+    }
     state.error = {
       text: e.message || "Something went wrong.",
       retry: e.kind !== "key" && e.kind !== "nokey",
       settings: e.kind === "key" || e.kind === "nokey",
     };
     if (state.meal === m) { render(); scrollToEnd(); }
+    rememberOpen();
   }
 }
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    if (state.sending) state.leftWhileSending = true;
+    rememberOpen();
+  } else if (state.retryOnReturn && state.meal === state.retryOnReturn && !state.sending) {
+    state.retryOnReturn = null;
+    runAI();
+  }
+});
+window.addEventListener("pagehide", rememberOpen);
 
 // ---------- events ----------
 $app.addEventListener("click", async (ev) => {
@@ -1310,7 +1375,7 @@ $app.addEventListener("click", async (ev) => {
 
 $app.addEventListener("change", async (ev) => {
   const t = ev.target;
-  if (t.id === "pick-chat-photo") {
+  if (t.id === "pick-chat-photo" || t.id === "pick-chat-camera") {
     addChatPhoto([...(t.files || [])]);
     return;
   }
@@ -1439,6 +1504,7 @@ async function start() {
     syncKeysDown();
     applyHealthLink();
     syncHealth();
+    restoreOpen();
     unsubGoals = store.watchGoals((g) => { state.goals = g; if (state.view === "day" || state.view === "settings") render(); refreshWeek(); });
     render();
   });
