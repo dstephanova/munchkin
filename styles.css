@@ -577,3 +577,6 @@ a { color: var(--accent-deep); font-weight: 700; }
 .pace .pk { font-family: var(--font-display); font-weight: 700; font-size: 1.1rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .pace.too-low { opacity: .5; }
 .screen { padding-bottom: calc(120px + env(safe-area-inset-bottom, 0px)); }
+.add-slot.small { padding: 8px; font-size: .88rem; border-width: 1.5px; }
+.ex-other .btn-row { margin-top: 4px; margin-bottom: 6px; }
+.ex-other .btn.small { padding: 10px 18px; }

@@ -199,7 +199,7 @@ function renderDay() {
             <span class="kc">${mt.calories} kcal</span>
           </button><button class="del-btn" data-action="home-ask-delete" data-id="${esc(m.id)}" aria-label="Delete ${esc(m.name || "meal")}">${ICON.trash}</button></div>`;
         }).join("")}
-        ${list.length === 0 ? `<button class="add-slot" data-action="open-sheet" data-slot="${id}">+ Add ${label.toLowerCase()}</button>` : ""}
+        <button class="add-slot ${list.length ? "small" : ""}" data-action="open-sheet" data-slot="${id}">+ Add ${list.length ? "more to " : ""}${label.toLowerCase()}</button>
       </div>
     </section>`;
   }).join("");
