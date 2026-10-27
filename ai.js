@@ -5,8 +5,8 @@ const KEY_STORE = "munchkin.ai";
 
 export const PROVIDERS = [
   { id: "gemini", name: "Gemini", note: "Free key from Google AI Studio", ready: true },
-  { id: "openai", name: "ChatGPT", note: "Coming in a later update", ready: false },
-  { id: "claude", name: "Claude", note: "Coming in a later update", ready: false },
+  { id: "openai", name: "ChatGPT", note: "Paid key from platform.openai.com", ready: true },
+  { id: "claude", name: "Claude", note: "Paid key from console.anthropic.com", ready: true },
 ];
 
 export function loadAISettings() {
@@ -237,28 +237,211 @@ async function fakeChat(turns, photo) {
 
 // turns: [{role:"user"|"model", text}]; the photo goes with the first turn.
 // Step 1: chat with search (fastest model first). Step 2: turn the answer into numbers.
-export async function askAI(turns, photoDataUrl, { demo = false, onStatus = () => {}, meal = null } = {}) {
-  if (demo) return fakeChat(turns, photoDataUrl);
+// ---------- ChatGPT (OpenAI) ----------
+const OPENAI = "https://api.openai.com/v1";
+function openaiErr(status, detail) {
+  if (status === 401) return new AIError("key", "Your ChatGPT key doesn't work. Paste a fresh one in Settings.");
+  if (status === 429 && /quota|billing|credit/i.test(detail)) return new AIError("credit", "Your OpenAI credit ran out. Top it up on platform.openai.com (Billing).");
+  if (status === 429) return new AIError("limit", "rate limit, slow down a little");
+  if (status >= 500) return new AIError("busy", `overloaded (${status})`);
+  if (status === 404 || /model/i.test(detail) && status === 400) return new AIError("model", "not available");
+  return new AIError("other", `error ${status}: ${detail.slice(0, 120)}`);
+}
+async function timedFetch(url, opts, timeoutMs) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { ...opts, signal: ctl.signal });
+    const data = await res.json().catch(() => null);
+    return { res, data };
+  } catch {
+    if (ctl.signal.aborted) throw new AIError("busy", "too slow");
+    throw new AIError("network", "Couldn't reach the AI. Check your internet and try again.");
+  } finally {
+    clearTimeout(timer);
+  }
+}
+const openaiEngine = {
+  label: "ChatGPT",
+  async pick(key) {
+    const { res, data } = await timedFetch(`${OPENAI}/models`, { headers: { Authorization: `Bearer ${key}` } }, 15000);
+    if (!res.ok) throw openaiErr(res.status, data?.error?.message || "");
+    const ids = (data.data || []).map((m) => m.id).filter((id) => /^gpt-\d/.test(id) && !/(audio|realtime|search|transcribe|tts|image|codex|chat-latest|\d{4}-\d{2}-\d{2})/.test(id));
+    const score = (id) => { const m = id.match(/gpt-(\d+)(?:\.(\d+))?/); return m ? Number(m[1]) * 100 + Number(m[2] || 0) : 0; };
+    const best = (re) => ids.filter((i) => re.test(i)).sort((a, b) => score(b) - score(a) || a.length - b.length)[0];
+    const mini = best(/-mini$/) || "gpt-4o-mini";
+    const nano = best(/-nano$/) || mini;
+    return { order: [mini], fast: nano };
+  },
+  async chat(key, model, { system, turns, photo, search, timeoutMs }) {
+    const input = mergeTurns(turns).map((t, i) => {
+      const content = [];
+      if (t.role === "user") {
+        for (const p of [i === 0 ? photo : null, ...(t.photos || []), t.photo].filter(Boolean)) content.push({ type: "input_image", image_url: p });
+        content.push({ type: "input_text", text: t.text || "Here's what I ate. What is it?" });
+      } else content.push({ type: "output_text", text: t.text || "…" });
+      return { role: t.role === "model" ? "assistant" : "user", content };
+    });
+    const body = { model, instructions: system, input };
+    if (search) body.tools = [{ type: "web_search" }];
+    const { res, data } = await timedFetch(`${OPENAI}/responses`, { method: "POST", headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" }, body: JSON.stringify(body) }, timeoutMs);
+    const detail = data?.error?.message || "";
+    if (!res.ok) {
+      if (search && res.status === 400 && /tool|search/i.test(detail)) return this.chat(key, model, { system, turns, photo, search: false, timeoutMs });
+      throw openaiErr(res.status, detail);
+    }
+    let text = "", sources = [];
+    for (const item of data.output || []) {
+      if (item.type !== "message") continue;
+      for (const c of item.content || []) {
+        if (c.type !== "output_text") continue;
+        text += c.text || "";
+        for (const a of c.annotations || []) if (a.type === "url_citation" && a.url) sources.push({ title: a.title || new URL(a.url).hostname, uri: a.url });
+      }
+    }
+    if (!text.trim()) throw new AIError("busy", "empty answer");
+    return { text: text.trim(), sources: dedupe(sources) };
+  },
+  async json(key, model, { system, text, timeoutMs }) {
+    const body = { model, instructions: system, input: [{ role: "user", content: [{ type: "input_text", text: text + "\n\nReply in JSON." }] }], text: { format: { type: "json_object" } } };
+    const { res, data } = await timedFetch(`${OPENAI}/responses`, { method: "POST", headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" }, body: JSON.stringify(body) }, timeoutMs);
+    if (!res.ok) throw openaiErr(res.status, data?.error?.message || "");
+    return (data.output || []).flatMap((i) => i.content || []).filter((c) => c.type === "output_text").map((c) => c.text).join("");
+  },
+};
+
+// ---------- Claude (Anthropic) ----------
+const ANTHROPIC = "https://api.anthropic.com/v1";
+function claudeHeaders(key) {
+  return { "x-api-key": key, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true", "content-type": "application/json" };
+}
+function claudeErr(status, detail) {
+  if (status === 401 || status === 403) return new AIError("key", "Your Claude key doesn't work. Paste a fresh one in Settings.");
+  if (/credit balance/i.test(detail)) return new AIError("credit", "Your Claude API credit ran out. Top it up on console.anthropic.com (Billing).");
+  if (status === 429) return new AIError("limit", "rate limit, slow down a little");
+  if (status === 529 || status >= 500) return new AIError("busy", `overloaded (${status})`);
+  if (status === 404) return new AIError("model", "not available");
+  return new AIError("other", `error ${status}: ${detail.slice(0, 120)}`);
+}
+const claudeEngine = {
+  label: "Claude",
+  async pick(key) {
+    const { res, data } = await timedFetch(`${ANTHROPIC}/models?limit=100`, { headers: claudeHeaders(key) }, 15000);
+    if (!res.ok) throw claudeErr(res.status, data?.error?.message || "");
+    const ids = (data.data || []).map((m) => m.id); // newest first
+    const sonnet = ids.find((i) => /sonnet/.test(i)) || ids[0];
+    const haiku = ids.find((i) => /haiku/.test(i)) || sonnet;
+    if (!sonnet) throw new AIError("other", "This key can't use any Claude model.");
+    return { order: [sonnet], fast: haiku };
+  },
+  async chat(key, model, { system, turns, photo, search, timeoutMs }) {
+    const messages = mergeTurns(turns).map((t, i) => {
+      const content = [];
+      if (t.role === "user") {
+        for (const p of [i === 0 ? photo : null, ...(t.photos || []), t.photo].filter(Boolean)) {
+          const [head, b64] = p.split(",");
+          content.push({ type: "image", source: { type: "base64", media_type: (head.match(/data:(.*?);/) || [])[1] || "image/jpeg", data: b64 } });
+        }
+      }
+      content.push({ type: "text", text: t.text || (t.role === "model" ? "…" : "Here's what I ate. What is it?") });
+      return { role: t.role === "model" ? "assistant" : "user", content };
+    });
+    const body = { model, max_tokens: 1500, system, messages };
+    if (search) body.tools = [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }];
+    const { res, data } = await timedFetch(`${ANTHROPIC}/messages`, { method: "POST", headers: claudeHeaders(key), body: JSON.stringify(body) }, timeoutMs);
+    const detail = data?.error?.message || "";
+    if (!res.ok) {
+      if (search && res.status === 400 && /tool|search/i.test(detail)) return this.chat(key, model, { system, turns, photo, search: false, timeoutMs });
+      throw claudeErr(res.status, detail);
+    }
+    let text = ""; const sources = [];
+    for (const b of data.content || []) {
+      if (b.type === "text") {
+        text += b.text || "";
+        for (const c of b.citations || []) if (c.url) sources.push({ title: c.title || new URL(c.url).hostname, uri: c.url });
+      }
+    }
+    if (!text.trim()) throw new AIError("busy", "empty answer");
+    return { text: text.trim(), sources: dedupe(sources) };
+  },
+  async json(key, model, { system, text, timeoutMs }) {
+    const body = { model, max_tokens: 1200, system, messages: [{ role: "user", content: text }] };
+    const { res, data } = await timedFetch(`${ANTHROPIC}/messages`, { method: "POST", headers: claudeHeaders(key), body: JSON.stringify(body) }, timeoutMs);
+    if (!res.ok) throw claudeErr(res.status, data?.error?.message || "");
+    return (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("");
+  },
+};
+
+// ---------- Gemini, in the same shape ----------
+const geminiEngine = {
+  label: "Gemini",
+  pick: (key, onStatus) => pickGeminiModels(key, onStatus),
+  async chat(key, model, { system, turns, photo, search, timeoutMs }) {
+    const r = await callGemini(key, model, { system, contents: toContents(turns, photo), search, timeoutMs });
+    return { text: r.text, sources: sourcesOf(r.cand) };
+  },
+  async json(key, model, { system, text, timeoutMs }) {
+    const r = await callGemini(key, model, { system, json: true, quick: true, timeoutMs, contents: [{ role: "user", parts: [{ text }] }] });
+    return r.text;
+  },
+};
+
+const ENGINES = { gemini: geminiEngine, openai: openaiEngine, claude: claudeEngine };
+
+function mergeTurns(turns) {
+  const out = [];
+  for (const t of turns) {
+    const last = out[out.length - 1];
+    if (last && last.role === t.role) {
+      last.text = [last.text, t.text].filter(Boolean).join("\n\n");
+      last.photos = [...(last.photos || []), ...(t.photos || []), t.photo].filter(Boolean);
+    } else out.push({ ...t, photos: [...(t.photos || [])] });
+  }
+  return out;
+}
+function dedupe(sources) {
+  const seen = new Set();
+  return sources.filter((s) => !seen.has(s.title) && seen.add(s.title)).slice(0, 3);
+}
+
+// Finds the chosen AI, its key and models (remembered after the first time).
+async function setup(onStatus = () => {}) {
   const s = loadAISettings();
-  const key = s.keys?.[s.provider];
-  if (!key) throw new AIError("nokey", "Add your Gemini key in Settings first.");
-  if (s.provider !== "gemini") throw new AIError("other", "Only Gemini works right now.");
-  let models = s.models?.geminiSet;
+  const provider = ENGINES[s.provider] ? s.provider : "gemini";
+  const engine = ENGINES[provider];
+  const key = s.keys?.[provider];
+  if (!key) throw new AIError("nokey", `Add your ${engine.label} key in Settings first.`);
+  const slot = provider === "gemini" ? "geminiSet" : provider;
+  let models = s.models?.[slot];
   if (!models || !Array.isArray(models.order) || !models.fast) {
-    models = await pickGeminiModels(key, onStatus);
-    s.models = { ...(s.models || {}), geminiSet: models };
+    models = await engine.pick(key, onStatus);
+    s.models = { ...(s.models || {}), [slot]: models };
     saveAISettings(s);
   }
+  return { engine, key, models };
+}
+export async function testProvider(onStatus) {
+  const s = loadAISettings();
+  const slot = s.provider === "gemini" ? "geminiSet" : s.provider;
+  if (s.models) { delete s.models[slot]; saveAISettings(s); }
+  const r = await askAI([{ role: "user", text: "one medium apple" }], null, { onStatus });
+  const m = loadAISettings().models?.[slot];
+  return { ...r, models: m };
+}
 
-  // Step 1
+// turns: [{role:"user"|"model", text, photos?}]; the first photo goes with the first turn.
+// Step 1: chat (with web search). Step 2: a quick model turns the answer into numbers.
+export async function askAI(turns, photoDataUrl, { demo = false, onStatus = () => {}, meal = null } = {}) {
+  if (demo) return fakeChat(turns, photoDataUrl);
+  const { engine, key, models } = await setup(onStatus);
+
   const report = [];
-  const contents = toContents(turns, photoDataUrl);
   const plan = [...models.order.map((m) => [m, true]), [models.order[0], false]];
   let chat = null, chatModel = null;
   for (const [model, search] of plan) {
     onStatus(`${search ? "Asking" : "Asking without search,"} ${model}…`);
     try {
-      chat = await callGemini(key, model, { system: CHAT_RULES, contents, search, timeoutMs: search ? 60000 : 40000 });
+      chat = await engine.chat(key, model, { system: CHAT_RULES, turns, photo: photoDataUrl, search, timeoutMs: search ? 60000 : 40000 });
       chatModel = model;
       break;
     } catch (e) {
@@ -266,55 +449,50 @@ export async function askAI(turns, photoDataUrl, { demo = false, onStatus = () =
       if (e.kind === "key" || e.kind === "credit" || e.kind === "network") throw withReport(e, report);
     }
   }
-  if (!chat) throw withReport(new AIError("busy", "Gemini couldn't answer right now. Try again in a minute."), report);
+  if (!chat) throw withReport(new AIError("busy", `${engine.label} couldn't answer right now. Try again in a minute.`), report);
   const reply = chat.text;
-  const sources = sourcesOf(chat.cand);
+  const sources = chat.sources || [];
 
-  // Step 2
   onStatus("Counting the calories…");
   const transcript = [...turns, { role: "model", text: reply }].slice(-12)
     .map((t) => `${t.role === "model" ? "Munchkin" : "Person"}: ${t.photo || t.photos?.length ? "(sent photos) " : ""}${t.text || (t.role === "model" ? "" : "(sent a photo)")}`).join("\n\n");
   const todayStr = new Date().toISOString().slice(0, 10);
   const before = (meal && meal.items?.length ? `\n\nPrevious numbers (may be outdated): ${JSON.stringify({ name: meal.name, items: meal.items })}` : "") + `\n\nToday's date: ${todayStr}.`;
   let numbers = null;
-  for (const model of [models.fast, chatModel]) {
+  for (const model of [models.fast, chatModel].filter((m, i, a) => a.indexOf(m) === i)) {
     try {
-      const r = await callGemini(key, model, {
-        system: EXTRACT_RULES, json: true, quick: true, timeoutMs: 25000,
-        contents: [{ role: "user", parts: [{ text: transcript + before }] }],
-      });
-      const parsed = cleanJSON(r.text);
-      if (parsed) {
-        const m = parsed.meal || parsed;
-        numbers = normalise({ reply, meal: m });
-        numbers.estimate = !!m.estimate;
-        const act = m.action;
-        if (act && typeof act === "object" && (act.add || act.slot || act.day)) {
-          numbers.action = {
-            add: !!act.add,
-            slot: ["breakfast", "lunch", "dinner", "snack"].includes(act.slot) ? act.slot : null,
-            day: typeof act.day === "string" ? act.day : null,
-          };
-        }
-        numbers.questions = (Array.isArray(m.questions) ? m.questions : [])
-          .map((q) => ({
-            question: String(q?.question || "").slice(0, 60),
-            options: (Array.isArray(q?.options) ? q.options : []).map((o) => String(o).slice(0, 40)).filter(Boolean).slice(0, 4),
-          }))
-          .filter((q) => q.options.length)
-          .slice(0, 3);
-        break;
-      }
+      const text = await engine.json(key, model, { system: EXTRACT_RULES, text: transcript + before, timeoutMs: 25000 });
+      const parsed = cleanJSON(text);
+      if (parsed) { numbers = readNumbers(parsed, reply); break; }
       report.push(`${model} (numbers): came out jumbled`);
     } catch (e) {
       report.push(`${model} (numbers): ${e.message}`);
     }
   }
-  if (!numbers) {
-    // Keep the chat answer even if counting failed; the old numbers stay.
-    return { reply, sources, name: meal?.name || "Meal", items: meal?.items || [], countFailed: true };
-  }
+  if (!numbers) return { reply, sources, name: meal?.name || "Meal", items: meal?.items || [], countFailed: true };
   return { ...numbers, reply, sources };
+}
+
+function readNumbers(parsed, reply) {
+  const m = parsed.meal || parsed;
+  const numbers = normalise({ reply, meal: m });
+  numbers.estimate = !!m.estimate;
+  const act = m.action;
+  if (act && typeof act === "object" && (act.add || act.slot || act.day)) {
+    numbers.action = {
+      add: !!act.add,
+      slot: ["breakfast", "lunch", "dinner", "snack"].includes(act.slot) ? act.slot : null,
+      day: typeof act.day === "string" ? act.day : null,
+    };
+  }
+  numbers.questions = (Array.isArray(m.questions) ? m.questions : [])
+    .map((q) => ({
+      question: String(q?.question || "").slice(0, 60),
+      options: (Array.isArray(q?.options) ? q.options : []).map((o) => String(o).slice(0, 40)).filter(Boolean).slice(0, 4),
+    }))
+    .filter((q) => q.options.length)
+    .slice(0, 3);
+  return numbers;
 }
 
 function withReport(e, report) {
@@ -332,23 +510,12 @@ export async function askExercise(text, kg, { demo = false } = {}) {
     await new Promise((r) => setTimeout(r, 500));
     return { name: "Tennis", minutes: 60, burned: Math.round(6 * kg), note: "Assumed a friendly singles game." };
   }
-  const s = loadAISettings();
-  const key = s.keys?.[s.provider];
-  if (!key) throw new AIError("nokey", "Add your Gemini key in Settings first.");
-  let models = s.models?.geminiSet;
-  if (!models || !Array.isArray(models.order) || !models.fast) {
-    models = await pickGeminiModels(key);
-    s.models = { ...(s.models || {}), geminiSet: models };
-    saveAISettings(s);
-  }
+  const { engine, key, models } = await setup();
   let lastErr;
   for (const model of [models.fast, ...models.order].filter((m, i, a) => a.indexOf(m) === i)) {
     try {
-      const r = await callGemini(key, model, {
-        system: EXERCISE_RULES, json: true, quick: true, timeoutMs: 25000,
-        contents: [{ role: "user", parts: [{ text: `Body weight: ${kg} kg.\nActivity: ${text}` }] }],
-      });
-      const j = cleanJSON(r.text);
+      const out = await engine.json(key, model, { system: EXERCISE_RULES, text: `Body weight: ${kg} kg.\nActivity: ${text}`, timeoutMs: 25000 });
+      const j = cleanJSON(out);
       if (j) return { name: String(j.name || "Exercise").slice(0, 40), minutes: Math.max(0, Math.round(Number(j.minutes) || 0)), burned: Math.max(0, Math.round(Number(j.burned) || 0)), note: String(j.note || "").slice(0, 160) };
     } catch (e) {
       lastErr = e;

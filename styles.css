@@ -599,3 +599,16 @@ label.btn { cursor: pointer; display: inline-flex; align-items: center; }
 .glass { width: 16px; height: 22px; border: 2px solid #6ec3f2; border-top-width: 0; border-radius: 0 0 6px 6px; position: relative; overflow: hidden; }
 .glass.full { background: linear-gradient(#9fdcff, #4fb3ea); }
 .water .help { margin-top: 6px; }
+
+/* ---------- stage 5 ---------- */
+.toggle { display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px; border: 2px solid var(--line); border-radius: 16px; cursor: pointer; }
+.toggle input { accent-color: var(--accent); width: 20px; height: 20px; margin-top: 2px; flex: none; }
+.toggle small { display: block; color: var(--muted); font-size: .82rem; }
+.welcome ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.welcome li { display: flex; align-items: center; gap: 12px; }
+.welcome li > span { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: var(--surface-2); font-weight: 800; flex: none; }
+.welcome li.done > span { background: var(--fat); color: #fff; }
+.welcome li div { flex: 1; display: grid; min-width: 0; }
+.welcome li small { color: var(--muted); font-size: .82rem; }
+.welcome li.done strong { text-decoration: line-through; opacity: .6; }
+.steps-note.muted { font-weight: 600; opacity: .85; }

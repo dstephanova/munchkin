@@ -3,7 +3,7 @@ import { readBarcode, lookupProduct, forGrams } from "./barcode.js";
 import { catSVG } from "./cat.js";
 import { ACTIVITY, PACES, paceOf, paceOptions, safeMinimum, suggestGoals, KCAL_PER_KG, EXERCISES, EFFORT, exerciseBurn, stepsBurn } from "./goals.js";
 import { createStore } from "./store.js";
-import { askExercise, askAI, hasKey, loadAISettings, saveAISettings, pickGeminiModels, PROVIDERS } from "./ai.js";
+import { askExercise, askAI, hasKey, loadAISettings, saveAISettings, testProvider, PROVIDERS } from "./ai.js";
 
 const demo = new URLSearchParams(location.search).has("demo");
 const $app = document.getElementById("app");
@@ -215,7 +215,11 @@ function renderDay() {
       <button class="icon-btn" data-action="ask" aria-label="Just asking: ask Munchkin a question">💬</button>
       <button class="icon-btn" data-action="settings" aria-label="Settings">${ICON.gear}</button>
     </header>
-    ${needKey ? `<div class="card"><h2>One last thing</h2><p>Add your free Gemini key so Munchkin can guess your food.</p><div class="btn-row"><button class="btn" data-action="settings">Add my key</button></div></div>` : ""}
+    ${needKey || !state.goals ? `<div class="card welcome"><h2>${needKey ? "Welcome to Munchkin! 🐱" : "Almost there!"}</h2>
+      <ol>
+        <li class="${needKey ? "" : "done"}"><span>${needKey ? "1" : "✓"}</span><div><strong>Add your AI key</strong><small>So Munchkin can guess your food. Gemini's is free.</small></div>${needKey ? `<button class="btn small" data-action="settings">Add key</button>` : ""}</li>
+        <li class="${state.goals ? "done" : ""}"><span>${state.goals ? "✓" : "2"}</span><div><strong>Set your daily goals</strong><small>Munchkin works out your calories and macros.</small></div>${state.goals ? "" : `<button class="btn small" data-action="goals">Set goals</button>`}</li>
+      </ol></div>` : ""}
     <nav class="datenav" aria-label="Choose day">
       <button class="icon-btn" data-action="prev-day" aria-label="Previous day">${ICON.back}</button>
       <button class="label" data-action="calendar" aria-label="Open calendar"><strong>${prettyDate(state.date)}</strong><span>${longDate(state.date)} · 📅</span></button>
@@ -291,6 +295,7 @@ function exerciseSectionHTML() {
         <label for="steps-input">👣 Steps</label>
         <input id="steps-input" type="number" inputmode="numeric" placeholder="from Google Fit" value="${st ? esc(st.steps) : ""}">
         <button class="btn small" data-action="save-steps">Save</button>
+        <span class="steps-note muted">Walks are already in your steps, so don't also add them as exercise.</span>
         ${sb ? `<span class="steps-note">${sb.burned ? `🔥 ${sb.burned} kcal from steps over your usual ${sb.base.toLocaleString()}` : `Within your usual ${sb.base.toLocaleString()} steps, already counted`}</span>` : ""}
       </div>
       <button class="add-slot" data-action="open-ex">+ Add exercise</button>
@@ -464,9 +469,16 @@ function renderMeal() {
   autoGrow(ta);
 }
 
+const KEY_HELP = {
+  gemini: ["Gemini", "https://aistudio.google.com/apikey", "Get a free one from Google AI Studio", "tap \"Create API key\""],
+  openai: ["ChatGPT", "https://platform.openai.com/api-keys", "Make one on platform.openai.com", "tap \"Create new secret key\" (needs a few dollars of credit)"],
+  claude: ["Claude", "https://console.anthropic.com/settings/keys", "Make one on console.anthropic.com", "tap \"Create key\" (needs a few dollars of credit)"],
+};
 function renderSettings() {
   const s = loadAISettings();
-  const key = s.keys?.gemini || "";
+  const prov = KEY_HELP[s.provider] ? s.provider : "gemini";
+  const [pname, plink, plinkText, pstep] = KEY_HELP[prov];
+  const key = s.keys?.[prov] || "";
   const u = state.user || {};
   $app.innerHTML = `
   <main class="screen">
@@ -480,7 +492,7 @@ function renderSettings() {
         ${PROVIDERS.map((p) => `<label class="radio ${p.ready ? "" : "disabled"}"><input type="radio" name="provider" value="${p.id}" ${s.provider === p.id ? "checked" : ""} ${p.ready ? "" : "disabled"}><span><strong>${p.name}</strong><small>${p.note}</small></span></label>`).join("")}
       </div>
       <div class="field">
-        <label for="gemini-key">Your Gemini key</label>
+        <label for="gemini-key">Your ${pname} key</label>
         <input id="gemini-key" type="${state.showKey ? "text" : "password"}" autocomplete="off" spellcheck="false" placeholder="Paste it here" value="${esc(key)}">
       </div>
       <div class="btn-row">
@@ -489,13 +501,22 @@ function renderSettings() {
       </div>
       ${state.settingsStatus ? `<p class="status-line ${state.settingsStatus.ok ? "ok" : "bad"}">${esc(state.settingsStatus.text)}</p>` : ""}
       ${state.settingsStatus?.live ? `<p class="ai-status" id="ai-status"></p>` : ""}
-      <p>No key yet? <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Get a free one from Google AI Studio</a>, tap "Create API key", copy it, and paste it above.</p>
-      <p>Your key stays on this device only. On a new phone, paste it again.</p>
+      <p>No key yet? <a href="${plink}" target="_blank" rel="noopener">${plinkText}</a>, ${pstep}, copy it, and paste it above.</p>
+      <label class="toggle"><input type="checkbox" id="sync-keys" ${s.syncKeys ? "checked" : ""}><span><strong>Remember my keys on my account</strong><small>Paste once, works on all your devices. Only you can read them.</small></span></label>
     </section>
     <section class="card">
       <h2>Daily goals</h2>
       ${state.goals ? `<p>${state.goals.calories} kcal · protein ${state.goals.protein} g · carbs ${state.goals.carbs} g · fat ${state.goals.fat} g</p>` : `<p>Not set yet. Munchkin can work them out for you.</p>`}
       <div class="btn-row"><button class="btn" data-action="goals">${state.goals ? "Change my goals" : "Set my goals"}</button></div>
+    </section>
+    <section class="card">
+      <h2>Backup</h2>
+      <p>Download your whole diary (meals, exercise, water, goals) as a file, just in case. You can load it back any time.</p>
+      <div class="btn-row">
+        <button class="btn" data-action="backup">Download backup</button>
+        <label class="btn ghost">Restore from a file<input type="file" id="restore-file" accept=".json,application/json" hidden></label>
+      </div>
+      ${state.backupStatus ? `<p class="status-line ${state.backupStatus.ok ? "ok" : "bad"}">${esc(state.backupStatus.text)}</p>` : ""}
     </section>
     <section class="card">
       <h2>Account</h2>
@@ -687,6 +708,26 @@ function waterHTML() {
     </div>
     <p class="help">One glass = 250 ml. ${state.goals?.profile?.weight ? "Goal from your weight." : "Set your weight in Goals for a personal goal."}</p>
   </section>`;
+}
+
+// ---------- keys on the account (optional) ----------
+async function syncKeysUp() {
+  const s = loadAISettings();
+  if (!s.syncKeys || !store?.saveKeys) return;
+  await store.saveKeys({ provider: s.provider, keys: s.keys || {} });
+}
+async function syncKeysDown() {
+  if (!store?.getKeys) return;
+  try {
+    const remote = await store.getKeys();
+    if (!remote?.keys) return;
+    const s = loadAISettings();
+    s.keys = { ...remote.keys, ...Object.fromEntries(Object.entries(s.keys || {}).filter(([, v]) => v)) };
+    if (!hasKey()) s.provider = remote.provider || s.provider;
+    s.syncKeys = true;
+    saveAISettings(s);
+    if (state.view === "day") render();
+  } catch { /* stays local */ }
 }
 
 // ---------- calendar ----------
@@ -913,7 +954,7 @@ async function applyAction(m, act) {
 async function runAI() {
   const m = state.meal;
   if (!demo && !hasKey()) {
-    state.error = { text: "Munchkin needs your free Gemini key before it can guess food.", settings: true, retry: false };
+    state.error = { text: "Munchkin needs an AI key before it can guess food. Add one in Settings (Gemini's is free).", settings: true, retry: false };
     render(); scrollToEnd();
     return;
   }
@@ -1157,25 +1198,34 @@ $app.addEventListener("click", async (ev) => {
   } else if (a === "save-key") {
     const key = document.getElementById("gemini-key").value.trim();
     const s = loadAISettings();
-    s.keys = { ...(s.keys || {}), gemini: key };
-    s.models = {};
+    const prov = KEY_HELP[s.provider] ? s.provider : "gemini";
+    s.keys = { ...(s.keys || {}), [prov]: key };
     saveAISettings(s);
+    syncKeysUp();
     if (!key) { state.settingsStatus = { ok: false, text: "Key removed." }; render(); return; }
     state.settingsStatus = { ok: true, text: "Checking your key… (this can take up to a minute)", live: true }; render();
     setAIStatus("Starting…");
     try {
-      if (!demo) {
-        const models = await pickGeminiModels(key, setAIStatus);
-        s.models = { geminiSet: models }; saveAISettings(s);
-      }
-      const t = await askAI([{ role: "user", text: "one medium apple" }], null, { demo, onStatus: setAIStatus });
+      const t = demo ? await askAI([{ role: "user", text: "one medium apple" }], null, { demo }) : await testProvider(setAIStatus);
       const kcal = t.items.reduce((n, i) => n + i.calories, 0);
-      const set = loadAISettings().models?.geminiSet;
-      state.settingsStatus = { ok: true, text: `It works! Test guess: ${t.name}, ${kcal} kcal.${set?.order ? ` Models: ${set.order.join(" → ")}.` : ""}` };
+      state.settingsStatus = { ok: true, text: `It works! Test guess: ${t.name}, ${kcal} kcal.${t.models?.order ? ` Models: ${t.models.order.join(" → ")}.` : ""}` };
     } catch (e) {
       state.settingsStatus = { ok: false, text: e.message };
     }
     stopAIStatus();
+    render();
+  } else if (a === "backup") {
+    try {
+      const docs = await store.getRange("0000-01-01", "9999-12-31");
+      const data = { app: "Munchkin", version: 1, exportedAt: new Date().toISOString(), goals: state.goals || null, entries: docs };
+      const blob = new Blob([JSON.stringify(data, null, 1)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url; link.download = `munchkin-backup-${iso(new Date())}.json`;
+      document.body.appendChild(link); link.click(); link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      state.backupStatus = { ok: true, text: `Saved ${docs.length} entries to your downloads.` };
+    } catch { state.backupStatus = { ok: false, text: "Couldn't make the backup. Check your internet and try again." }; }
     render();
   } else if (a === "signout") {
     await store.signOut();
@@ -1227,6 +1277,25 @@ $app.addEventListener("change", async (ev) => {
     if (rest.length) addChatPhoto(rest); // extra photos wait to be sent with the first message
   } else if (t.name === "provider") {
     const s = loadAISettings(); s.provider = t.value; saveAISettings(s);
+    state.settingsStatus = null; state.showKey = false; render(); syncKeysUp();
+  } else if (t.id === "sync-keys") {
+    const s = loadAISettings(); s.syncKeys = t.checked; saveAISettings(s);
+    try {
+      if (t.checked) { await syncKeysUp(); toast("Keys saved to your account 🔒"); }
+      else { await store.saveKeys(null); toast("Keys removed from your account"); }
+    } catch { toast("Couldn't save. Try again."); }
+  } else if (t.id === "restore-file") {
+    const file = t.files && t.files[0];
+    if (!file) return;
+    try {
+      const data = JSON.parse(await file.text());
+      if (data.app !== "Munchkin" || !Array.isArray(data.entries)) throw new Error();
+      state.backupStatus = { ok: true, text: `Restoring ${data.entries.length} entries…` }; render();
+      for (const e of data.entries) if (e && e.id && e.date) await store.save(e);
+      if (data.goals && !state.goals) await store.saveGoals(data.goals);
+      state.backupStatus = { ok: true, text: `Restored ${data.entries.length} entries 🐱` };
+    } catch { state.backupStatus = { ok: false, text: "That file isn't a Munchkin backup." }; }
+    render();
   }
 });
 
@@ -1291,6 +1360,7 @@ async function start() {
     state.view = "day";
     watchDay();
     if (unsubGoals) unsubGoals();
+    syncKeysDown();
     unsubGoals = store.watchGoals((g) => { state.goals = g; if (state.view === "day" || state.view === "settings") render(); refreshWeek(); });
     render();
   });

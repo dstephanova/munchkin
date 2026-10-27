@@ -72,6 +72,14 @@ async function firebaseStore() {
     watchGoals(cb) {
       return fs.onSnapshot(fs.doc(db, "users", a.currentUser.uid, "settings", "goals"), (snap) => cb(snap.exists() ? snap.data() : null), () => cb(null));
     },
+    async getKeys() {
+      const snap = await fs.getDoc(fs.doc(db, "users", a.currentUser.uid, "settings", "keys"));
+      return snap.exists() ? snap.data() : null;
+    },
+    async saveKeys(k) {
+      const ref = fs.doc(db, "users", a.currentUser.uid, "settings", "keys");
+      if (k) await fs.setDoc(ref, k); else await fs.deleteDoc(ref);
+    },
     async saveGoals(g) { await fs.setDoc(fs.doc(db, "users", a.currentUser.uid, "settings", "goals"), g); },
   };
 }
@@ -119,6 +127,8 @@ function memoryStore() {
     async remove(id) { meals.delete(id); notify(); },
     async getRange(start, end) { return [...meals.values()].filter((m) => m.date >= start && m.date <= end); },
     watchGoals(cb) { goalWatchers.add(cb); cb(goals); return () => goalWatchers.delete(cb); },
+    async getKeys() { return null; },
+    async saveKeys() {},
     async saveGoals(g) { goals = structuredClone(g); goalWatchers.forEach((w) => w(goals)); },
   };
 }
