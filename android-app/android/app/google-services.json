@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "131276806992",
+    "project_id": "munchkin-fb2b7",
+    "storage_bucket": "munchkin-fb2b7.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:131276806992:android:1c72e2c09cf908e0ce6a55",
+        "android_client_info": {
+          "package_name": "io.github.dstephanova.munchkin.android"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "131276806992-g81mfaq4g06037o4h9q1l2816a6mj793.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "io.github.dstephanova.munchkin.android",
+            "certificate_hash": "2daaad57faf24eee9c15123d269ae0c70fea0673"
+          }
+        },
+        {
+          "client_id": "131276806992-kj5lr55dotegd7aackicjstbotdob3gp.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBYpW7YIlihpwvccqCwc9LmJQW3_rLM1rE"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "131276806992-kj5lr55dotegd7aackicjstbotdob3gp.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

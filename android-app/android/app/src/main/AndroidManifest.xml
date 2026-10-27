@@ -60,6 +60,7 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.CAMERA" />
 
     <queries>
         <package android:name="com.google.android.apps.healthdata" />

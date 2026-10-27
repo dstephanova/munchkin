@@ -1,6 +1,20 @@
 {
-  "appId": "io.github.dstephanova.munchkin",
+  "appId": "io.github.dstephanova.munchkin.android",
   "appName": "Munchkin",
   "webDir": "www",
-  "android": { "backgroundColor": "#171024" }
+  "android": {
+    "backgroundColor": "#171024"
+  },
+  "server": {
+    "url": "https://dstephanova.github.io/munchkin/",
+    "androidScheme": "https"
+  },
+  "plugins": {
+    "FirebaseAuthentication": {
+      "skipNativeAuth": true,
+      "providers": [
+        "google.com"
+      ]
+    }
+  }
 }

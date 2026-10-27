@@ -294,7 +294,10 @@ function exerciseSectionHTML() {
       <div class="steps-row">
         <label for="steps-input">👣 Steps</label>
         <input id="steps-input" type="number" inputmode="numeric" placeholder="from Google Fit" value="${st ? esc(st.steps) : ""}">
-        ${st?.source ? `<span class="steps-note">Synced from ${esc(st.source)} by the Android app</span>` : ""}
+        ${st?.source ? `<span class="steps-note">Synced from ${esc(st.source)}${isNative() ? " automatically" : " by the Android app"}</span>` : ""}
+        ${state.health === "ask" ? `<button class="btn small" data-action="health-connect">Connect Google Fit</button>` : ""}
+        ${state.health === "missing" ? `<span class="steps-note">Health Connect isn't on this phone. <button class="link-btn" data-action="health-store">Get it</button></span>` : ""}
+        ${state.health === "error" ? `<span class="steps-note">Couldn't read steps: ${esc(state.healthError || "")}</span>` : ""}
         <button class="btn small" data-action="save-steps">Save</button>
         <span class="steps-note muted">Walks are already in your steps, so don't also add them as exercise.</span>
         ${sb ? `<span class="steps-note">${sb.burned ? `🔥 ${sb.burned} kcal from steps over your usual ${sb.base.toLocaleString()}` : `Within your usual ${sb.base.toLocaleString()} steps, already counted`}</span>` : ""}
@@ -510,12 +513,12 @@ function renderSettings() {
       ${state.goals ? `<p>${state.goals.calories} kcal · protein ${state.goals.protein} g · carbs ${state.goals.carbs} g · fat ${state.goals.fat} g</p>` : `<p>Not set yet. Munchkin can work them out for you.</p>`}
       <div class="btn-row"><button class="btn" data-action="goals">${state.goals ? "Change my goals" : "Set my goals"}</button></div>
     </section>
-    <section class="card">
+    ${isNative() ? "" : `<section class="card">
       <h2>Android app 🤖</h2>
-      <p>Reads your steps from Google Fit (through Health Connect) and sends them to Munchkin automatically each time you open it.</p>
+      <p>Munchkin as a real Android app: everything you have here, plus your steps from Google Fit synced automatically.</p>
       <div class="btn-row"><a class="btn" href="https://github.com/dstephanova/munchkin/releases/latest/download/munchkin.apk">Download for Android</a></div>
       <p class="help">After downloading, open the file to install. Your phone may ask you to allow installing apps from your browser; that's normal for apps not from the Play Store.</p>
-    </section>
+    </section>`}
     <section class="card">
       <h2>Backup</h2>
       <p>Download your whole diary (meals, exercise, water, goals) as a file, just in case. You can load it back any time.</p>
@@ -736,6 +739,48 @@ async function applyHealthLink() {
   } catch { toast("Couldn't save your steps. Try again."); }
 }
 readHealthLink();
+
+// ---------- inside the Android app: read steps straight from Health Connect ----------
+const isNative = () => !!window.Capacitor?.isNativePlatform?.();
+const HealthAPI = () => (isNative() ? window.Capacitor.Plugins?.HealthPlugin : null);
+const HEALTH_PERMS = ["READ_STEPS", "READ_ACTIVE_CALORIES"];
+async function syncHealth(ask = false) {
+  const H = HealthAPI();
+  if (!H || !state.user || !store) return;
+  try {
+    const av = await H.isHealthAvailable();
+    if (!av.available) { state.health = "missing"; if (state.view === "day") render(); return; }
+    if (ask) await H.requestHealthPermissions({ permissions: HEALTH_PERMS });
+    const perm = await H.checkHealthPermissions({ permissions: HEALTH_PERMS });
+    const ok = perm.permissions && Object.values(perm.permissions).length && Object.values(perm.permissions).every(Boolean);
+    if (!ok) { state.health = "ask"; if (state.view === "day") render(); return; }
+    state.health = "ok";
+    const now = new Date(), start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const sum = async (dataType) => {
+      const r = await H.queryAggregated({ startDate: start.toISOString(), endDate: now.toISOString(), dataType, bucket: "day" });
+      return Math.round((r.aggregatedData || []).reduce((n, x) => n + (Number(x.value) || 0), 0));
+    };
+    const steps = await sum("steps");
+    const active = await sum("active-calories").catch(() => 0);
+    const date = iso(now), id = `steps-${date}`;
+    const existing = state.date === date ? state.meals.find((d) => d.id === id) : null;
+    if (existing && existing.steps === steps) return;
+    await store.save({ id, type: "steps", date, steps, active, source: "Google Fit", createdAt: existing?.createdAt || Date.now(), updatedAt: Date.now() });
+  } catch (e) {
+    state.health = "error"; state.healthError = String(e?.message || e).slice(0, 140);
+    if (state.view === "day") render();
+  }
+}
+if (isNative()) {
+  const App = window.Capacitor.Plugins?.App;
+  App?.addListener?.("resume", () => syncHealth());
+  // Android back button: go back inside Munchkin, or leave the app from the home screen.
+  App?.addListener?.("backButton", () => {
+    if (state.view !== "day" || document.querySelector(".viewer:not([hidden])")) history.back();
+    else if (state.sheet || state.exSheet) { state.sheet = false; state.exSheet = null; render(); }
+    else App.minimizeApp ? App.minimizeApp() : App.exitApp();
+  });
+}
 
 // ---------- keys on the account (optional) ----------
 async function syncKeysUp() {
@@ -1026,6 +1071,10 @@ $app.addEventListener("click", async (ev) => {
   if (a === "signin") {
     state.loginError = "";
     try { await store.signIn(); } catch (e) { state.loginError = e.message; render(); }
+  } else if (a === "health-connect") {
+    await syncHealth(true);
+  } else if (a === "health-store") {
+    try { await HealthAPI()?.showHealthConnectInPlayStore(); } catch {}
   } else if (a === "water") {
     const w = state.meals.find((d) => d.type === "water");
     const ml = Math.max(0, (w?.ml || 0) + Number(el.dataset.d) * GLASS);
@@ -1389,6 +1438,7 @@ async function start() {
     if (unsubGoals) unsubGoals();
     syncKeysDown();
     applyHealthLink();
+    syncHealth();
     unsubGoals = store.watchGoals((g) => { state.goals = g; if (state.view === "day" || state.view === "settings") render(); refreshWeek(); });
     render();
   });

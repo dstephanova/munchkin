@@ -35,6 +35,20 @@ async function firebaseStore() {
       return auth.onAuthStateChanged(a, (u) => cb(u ? { uid: u.uid, name: u.displayName || "", email: u.email || "", photo: u.photoURL || "" } : null));
     },
     async signIn() {
+      // Inside the Android app, use the phone's own Google account picker.
+      const FA = window.Capacitor?.isNativePlatform?.() && window.Capacitor.Plugins?.FirebaseAuthentication;
+      if (FA) {
+        try {
+          const r = await FA.signInWithGoogle();
+          const cred = auth.GoogleAuthProvider.credential(r.credential?.idToken || null, r.credential?.accessToken || null);
+          await auth.signInWithCredential(a, cred);
+        } catch (e) {
+          const msg = String(e?.message || e || "");
+          if (/cancel/i.test(msg)) return;
+          throw new Error("Login didn't work: " + msg.slice(0, 120));
+        }
+        return;
+      }
       try {
         await auth.signInWithPopup(a, provider);
       } catch (e) {
@@ -49,7 +63,11 @@ async function firebaseStore() {
         throw new Error("Login didn't work. Try again.");
       }
     },
-    signOut() { return auth.signOut(a); },
+    async signOut() {
+      const FA = window.Capacitor?.isNativePlatform?.() && window.Capacitor.Plugins?.FirebaseAuthentication;
+      if (FA) { try { await FA.signOut(); } catch {} }
+      return auth.signOut(a);
+    },
     watchDay(date, cb, onErr) {
       const q = fs.query(mealsCol(), fs.where("date", "==", date));
       return fs.onSnapshot(q, (snap) => cb(snap.docs.map((d) => ({ id: d.id, ...d.data() }))), (e) => onErr && onErr(e));
