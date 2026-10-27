@@ -1,4 +1,5 @@
 import { openViewer } from "./viewer.js";
+import { readBarcode, lookupProduct, forGrams } from "./barcode.js";
 import { catSVG } from "./cat.js";
 import { ACTIVITY, PACES, paceOf, paceOptions, safeMinimum, suggestGoals, KCAL_PER_KG, EXERCISES, EFFORT, exerciseBurn, stepsBurn } from "./goals.js";
 import { createStore } from "./store.js";
@@ -144,6 +145,7 @@ function render() {
   if (state.view === "settings") return renderSettings();
   if (state.view === "goals") return renderGoals();
   if (state.view === "calendar") return renderCalendar();
+  if (state.view === "barcode") return renderBarcode();
   if (state.view === "meal") return renderMeal();
   return renderDay();
 }
@@ -210,6 +212,7 @@ function renderDay() {
       <span class="logo-cat">${catPic("small", "")}</span>
       <h1>Munchkin</h1>
       <span class="spacer"></span>
+      <button class="icon-btn" data-action="ask" aria-label="Just asking: ask Munchkin a question">💬</button>
       <button class="icon-btn" data-action="settings" aria-label="Settings">${ICON.gear}</button>
     </header>
     ${needKey ? `<div class="card"><h2>One last thing</h2><p>Add your free Gemini key so Munchkin can guess your food.</p><div class="btn-row"><button class="btn" data-action="settings">Add my key</button></div></div>` : ""}
@@ -221,6 +224,7 @@ function renderDay() {
     ${summaryHTML(t, bubble, dayBurn(state.meals))}
     ${weekHTML()}
     ${slotsHTML}
+    ${waterHTML()}
     ${exerciseSectionHTML()}
   </main>
   <div class="fab-row">
@@ -374,7 +378,11 @@ function sheetHTML() {
         <label class="big-action">${ICON.camera}<span>Take photo</span><input type="file" id="pick-camera" accept="image/*" capture="environment"></label>
         <label class="big-action">${ICON.image}<span>From gallery</span><input type="file" id="pick-gallery" accept="image/*" multiple></label>
         <button class="big-action" data-action="type-meal">${ICON.pen}<span>Type it</span></button>
+        <label class="big-action"><span class="ba-emoji">📋</span><span>Scan a label</span><input type="file" id="pick-label" accept="image/*" capture="environment"></label>
+        <label class="big-action"><span class="ba-emoji">▥</span><span>Barcode</span><input type="file" id="pick-barcode" accept="image/*" capture="environment"></label>
+        <button class="big-action" data-action="ask"><span class="ba-emoji">💬</span><span>Just asking</span></button>
       </div>
+      <p class="help">Label: snap the nutrition table on the package. Barcode: snap the stripes, and Munchkin looks it up in a free food database.</p>
     </div>
   </div>`;
 }
@@ -384,7 +392,7 @@ function renderMeal() {
   if (!m) { state.view = "day"; return render(); }
   const t = sumItems(m.items);
   const firstTime = m.chat.length === 0;
-  const placeholder = firstTime ? "What did you eat? e.g. two slices of pizza" : "Fix anything, or add a photo";
+  const placeholder = m.askOnly ? "Ask anything, e.g. calories in a croissant?" : firstTime ? "What did you eat? e.g. two slices of pizza" : "Fix anything, or add a photo";
 
   const chatHTML = m.chat.map((c, i) => {
     if (c.role === "model") {
@@ -416,8 +424,11 @@ function renderMeal() {
   <main class="screen">
     <header class="topbar meal-top">
       <button class="icon-btn" data-action="back" aria-label="Back to day">${ICON.back}</button>
-      <div class="title"><strong>${esc(m.items.length ? m.name : "New meal")}</strong><span>${SLOT_NAME[m.slot] || "Meal"} · ${prettyDate(m.date)}</span></div>
-      ${m._draft ? "" : `<button class="icon-btn" data-action="ask-delete" aria-label="Delete meal">${ICON.trash}</button>`}
+      ${m.askOnly
+        ? `<div class="title"><strong>💬 Just asking</strong><span>Nothing is saved unless you add it</span></div>
+           <button class="btn ghost small" data-action="ask-new">New question</button>`
+        : `<div class="title"><strong>${esc(m.items.length ? m.name : "New meal")}</strong><span>${SLOT_NAME[m.slot] || "Meal"} · ${prettyDate(m.date)}</span></div>
+           ${m._draft ? "" : `<button class="icon-btn" data-action="ask-delete" aria-label="Delete meal">${ICON.trash}</button>`}`}
     </header>
     ${state.confirmDelete ? `<div class="confirm"><strong>Delete this meal?</strong><p style="margin:0;color:var(--muted)">It disappears from your diary for good.</p>
       <div class="btn-row"><button class="btn danger" data-action="delete">Delete</button><button class="btn ghost" data-action="cancel-delete">Keep it</button></div></div>` : ""}
@@ -425,6 +436,7 @@ function renderMeal() {
     <section class="nutri">
       <div class="row"><span class="kcal">${m.estimate ? "≈" : ""}${t.calories}<small> kcal</small></span>${m.estimate ? `<span class="estimate">estimate, pick your option below</span>` : ""}</div>
       ${macrosHTML(t)}
+      ${m.askOnly ? `<div class="btn-row"><button class="btn" data-action="ask-add">+ Add to today's ${SLOT_NAME[m.slot].toLowerCase()}</button></div>` : ""}
       <ul class="items">${m.items.map((it) => `<li><span>${esc(it.name)} <em>${esc(it.amount)}</em></span><span>${it.calories} kcal</span></li>`).join("")}</ul>
     </section>` : ""}
     ${m.photo ? `<button class="meal-photo" data-action="view-photo" data-src="${esc(m.photo)}" aria-label="Open photo full screen"><img src="${esc(m.photo)}" alt="Your meal photo"></button>` : ""}
@@ -432,7 +444,7 @@ function renderMeal() {
       ${SLOTS.map(([id, label]) => `<button class="chip" data-action="meal-slot" data-slot="${id}" aria-pressed="${m.slot === id}">${label}</button>`).join("")}
     </div>
     <section class="chat" aria-label="Chat with Munchkin">
-      ${firstTime && !state.sending ? `<div class="model-row"><span class="mini-cat">${catSVG({ label: "", head: true })}</span><div class="msg model">${m.photo ? "Tap send and I'll guess what's on your plate. You can add notes first, like \"I only ate half\"." : "Tell me what you ate and roughly how much!"}</div></div>` : ""}
+      ${firstTime && !state.sending ? `<div class="model-row"><span class="mini-cat">${catSVG({ label: "", head: true })}</span><div class="msg model">${m.askOnly ? "Ask me anything about food! Like \"how many calories in a croissant?\" or \"which is lighter, a wrap or a salad?\". Nothing goes in your diary unless you tap Add." : m.photo ? "Tap send and I'll guess what's on your plate. You can add notes first, like \"I only ate half\"." : "Tell me what you ate and roughly how much!"}</div></div>` : ""}
       ${chatHTML}
       ${state.sending ? `<div class="model-row"><span class="mini-cat">${catSVG({ label: "", head: true })}</span><div><div class="msg model thinking" aria-label="Munchkin is thinking"><i></i><i></i><i></i></div><div class="ai-status" id="ai-status"></div></div></div>` : ""}
       ${state.error ? `<div class="msg error">${esc(state.error.text)}
@@ -592,6 +604,91 @@ function keepExInputs() {
   const d = document.getElementById("ex-desc"); if (d) x.desc = d.value;
 }
 
+// ---------- barcode ----------
+async function findBarcode(code) {
+  const bc = state.bc;
+  bc.code = code; bc.status = "looking"; render();
+  try {
+    const p = demo && code === "1234567890123"
+      ? { code, name: "Example lasagna", brand: "Demo", image: "", packGrams: 400, packText: "400 g", servingGrams: null, servingText: "", per100: { calories: 145, protein: 7, carbs: 15, fat: 6 } }
+      : await lookupProduct(code);
+    if (state.bc !== bc) return;
+    if (!p) { bc.status = "notfound"; }
+    else if (p.missing) { bc.status = "nonutrition"; bc.product = p; }
+    else { bc.status = "found"; bc.product = p; bc.grams = p.packGrams || 100; }
+  } catch (e) { bc.status = "error"; bc.error = e.message; }
+  if (state.view === "barcode") render();
+}
+function renderBarcode() {
+  const bc = state.bc || { status: "nocode" };
+  const p = bc.product;
+  let body = "";
+  if (bc.status === "reading") body = `<p>Reading the barcode…</p>`;
+  else if (bc.status === "looking") body = `<p>Found code <strong>${esc(bc.code)}</strong>. Looking it up…</p>`;
+  else if (["nocode", "notfound", "nonutrition", "error"].includes(bc.status)) {
+    const msg = {
+      nocode: "Munchkin couldn't read a barcode in that photo. Try again closer, with the stripes sharp and straight, or type the number under the stripes.",
+      notfound: `This product (${esc(bc.code || "")}) isn't in the food database yet. Snap the nutrition label instead, and Munchkin will read it.`,
+      nonutrition: `Found “${esc(p?.name || bc.code)}”, but the database has no calories for it. Snap the nutrition label instead.`,
+      error: esc(bc.error || "Something went wrong."),
+    }[bc.status];
+    body = `<p>${msg}</p>
+      <div class="field"><label for="bc-code">Barcode number</label><input id="bc-code" type="text" inputmode="numeric" value="${esc(bc.code || "")}" placeholder="e.g. 3800123456789"></div>
+      <div class="btn-row"><button class="btn" data-action="bc-lookup">Look it up</button>
+      <label class="btn ghost">📋 Snap the label instead<input type="file" id="pick-label" accept="image/*" capture="environment" hidden></label></div>`;
+  } else if (bc.status === "found") {
+    const g = Number(bc.grams) || 0, t = forGrams(p, g);
+    const opts = [];
+    if (p.packGrams) { opts.push([p.packGrams, `Whole pack (${p.packGrams} g)`]); opts.push([Math.round(p.packGrams / 2), `Half (${Math.round(p.packGrams / 2)} g)`]); }
+    if (p.servingGrams) opts.push([p.servingGrams, `1 serving (${p.servingGrams} g)`]);
+    opts.push([100, "100 g"]);
+    body = `
+      <div class="product">
+        ${p.image ? `<img src="${esc(p.image)}" alt="">` : ""}
+        <div><strong>${esc(p.name)}</strong><span>${esc(p.brand)}${p.packText ? ` · ${esc(p.packText)}` : ""}</span>
+        <span>Per 100 g: ${Math.round(p.per100.calories)} kcal · P ${p.per100.protein ?? "?"} g · C ${p.per100.carbs ?? "?"} g · F ${p.per100.fat ?? "?"} g</span></div>
+      </div>
+      <div class="field"><label>How much did you have?</label>
+        <div class="chips">${opts.map(([v, l]) => `<button class="chip" data-action="bc-grams" data-g="${v}" aria-pressed="${g === v}">${l}</button>`).join("")}</div>
+      </div>
+      <div class="field"><label for="bc-g">Or type grams</label><input id="bc-g" type="number" inputmode="numeric" value="${esc(bc.grams)}"></div>
+      <div class="ex-result"><span>${g} g</span><strong id="bc-kcal">${t.calories} kcal</strong></div>
+      <div class="chips">${SLOTS.map(([id, label]) => `<button class="chip" data-action="bc-slot" data-slot="${id}" aria-pressed="${bc.slot === id}">${label}</button>`).join("")}</div>
+      <div class="btn-row"><button class="btn" data-action="bc-add">Add to diary</button></div>
+      <p class="help">From Open Food Facts, a free food database filled in by people. If the numbers look off, compare with the label.</p>`;
+  }
+  $app.innerHTML = `
+  <main class="screen">
+    <header class="topbar">
+      <button class="icon-btn" data-action="back" aria-label="Back">${ICON.back}</button>
+      <h1>Barcode</h1>
+    </header>
+    <section class="card">${body}</section>
+  </main>`;
+}
+
+// ---------- water ----------
+const GLASS = 250;
+function waterGoal() {
+  const kg = Number(state.goals?.profile?.weight);
+  return kg ? Math.round((kg * 33) / GLASS) * GLASS : 2000;
+}
+function waterHTML() {
+  const w = state.meals.find((d) => d.type === "water");
+  const ml = w?.ml || 0, goal = waterGoal();
+  const glasses = Math.max(8, Math.ceil(goal / GLASS));
+  const full = Math.round(ml / GLASS);
+  return `<section class="water">
+    <div class="slot-head"><h2>💧 Water</h2><span class="sum">${(ml / 1000).toFixed(2).replace(/0$/, "")} / ${(goal / 1000).toFixed(1)} L</span></div>
+    <div class="glasses">
+      <button class="icon-btn" data-action="water" data-d="-1" aria-label="Remove a glass" ${ml ? "" : "disabled"}>−</button>
+      <div class="glass-row">${[...Array(glasses)].map((_, i) => `<span class="glass ${i < full ? "full" : ""}"></span>`).join("")}</div>
+      <button class="icon-btn add" data-action="water" data-d="1" aria-label="Add a glass (250 ml)">+</button>
+    </div>
+    <p class="help">One glass = 250 ml. ${state.goals?.profile?.weight ? "Goal from your weight." : "Set your weight in Goals for a personal goal."}</p>
+  </section>`;
+}
+
 // ---------- calendar ----------
 async function openCalendar() {
   const d = fromIso(state.date);
@@ -694,7 +791,7 @@ function back() {
   else go("day");
 }
 window.addEventListener("popstate", () => {
-  if (["meal", "settings", "goals", "calendar"].includes(state.view)) {
+  if (["meal", "settings", "goals", "calendar", "barcode"].includes(state.view)) {
     state.settingsStatus = null;
     go("day");
   }
@@ -811,7 +908,7 @@ async function runAI() {
     m.items = res.items;
     state.sending = false;
     if (state.meal === m) { render(); scrollToEnd(); }
-    try { await saveMeal(m); } catch { toast("Couldn't save. It will retry when you're online."); }
+    if (!m.askOnly) { try { await saveMeal(m); } catch { toast("Couldn't save. It will retry when you're online."); } }
   } catch (e) {
     stopAIStatus();
     state.sending = false;
@@ -835,6 +932,47 @@ $app.addEventListener("click", async (ev) => {
   if (a === "signin") {
     state.loginError = "";
     try { await store.signIn(); } catch (e) { state.loginError = e.message; render(); }
+  } else if (a === "water") {
+    const w = state.meals.find((d) => d.type === "water");
+    const ml = Math.max(0, (w?.ml || 0) + Number(el.dataset.d) * GLASS);
+    try { await store.save({ id: `water-${state.date}`, type: "water", date: state.date, ml, createdAt: w?.createdAt || Date.now(), updatedAt: Date.now() }); }
+    catch { toast("Couldn't save. Try again."); }
+  } else if (a === "ask") {
+    state.sheet = false;
+    if (!state.askMeal) { state.askMeal = newMeal(null); state.askMeal.askOnly = true; state.askMeal.slot = defaultSlot(); }
+    state.meal = state.askMeal;
+    state.error = null; state.composer = ""; state.pendingPhotos = [];
+    go("meal");
+    document.getElementById("composer")?.focus();
+  } else if (a === "ask-new") {
+    state.askMeal = newMeal(null); state.askMeal.askOnly = true; state.askMeal.slot = defaultSlot();
+    state.meal = state.askMeal; state.error = null; state.composer = ""; render();
+  } else if (a === "ask-add") {
+    const m = state.meal;
+    m.askOnly = false; m.date = iso(new Date()); m.createdAt = Date.now();
+    state.askMeal = null;
+    try { await saveMeal(m); toast(`Added to ${SLOT_NAME[m.slot].toLowerCase()} today 🐱`); } catch { toast("Couldn't save. Try again."); }
+    render();
+  } else if (a === "bc-lookup") {
+    const code = (document.getElementById("bc-code")?.value || "").replace(/\D/g, "");
+    if (code.length < 6) { toast("Type the numbers under the barcode."); return; }
+    findBarcode(code);
+  } else if (a === "bc-grams") {
+    state.bc.grams = Number(el.dataset.g); render();
+  } else if (a === "bc-slot") {
+    state.bc.slot = el.dataset.slot; const g = document.getElementById("bc-g"); if (g) state.bc.grams = g.value; render();
+  } else if (a === "bc-add") {
+    const bc = state.bc, p = bc.product, g = Math.round(Number(document.getElementById("bc-g")?.value) || bc.grams || 0);
+    if (!g) { toast("How many grams did you have?"); return; }
+    const t = forGrams(p, g);
+    const name = [p.brand, p.name].filter(Boolean).join(" ").slice(0, 60);
+    const meal = { id: store.newId(), date: state.date, slot: bc.slot || defaultSlot(), name, photo: p.image || null,
+      items: [{ name: p.name.slice(0, 60), amount: `${g} g`, ...t }],
+      chat: [{ role: "user", text: `Scanned barcode ${p.code}: ${g} g` },
+             { role: "model", text: `From the food database: **${name}**, ${g} g = ${t.calories} kcal (protein ${t.protein} g, carbs ${t.carbs} g, fat ${t.fat} g). Tell me if you want to change anything.` }],
+      createdAt: Date.now(), updatedAt: Date.now() };
+    try { await saveMeal(meal); toast(`Added ${t.calories} kcal 🐱`); } catch { toast("Couldn't save. Try again."); return; }
+    state.bc = null; back();
   } else if (a === "open-ex") {
     state.exSheet = { kind: "walk", minutes: 30, effort: "moderate" }; render();
   } else if (a === "close-ex") {
@@ -1024,6 +1162,32 @@ $app.addEventListener("change", async (ev) => {
     addChatPhoto([...(t.files || [])]);
     return;
   }
+  if (t.id === "pick-label") {
+    const file = t.files && t.files[0];
+    if (!file) return;
+    state.sheet = false;
+    let photo;
+    try { photo = await readPhoto(file, 1024); } catch { toast("Couldn't open that photo. Try another one."); render(); return; }
+    state.meal = newMeal(photo);
+    state.meal.label = true;
+    state.error = null; state.composer = ""; state.pendingPhotos = [];
+    go("meal");
+    sendMessage("This is a photo of a nutrition label. Read it: tell me the product, the values per 100 g and per pack or portion, then ask me how much I had.");
+    return;
+  }
+  if (t.id === "pick-barcode") {
+    const file = t.files && t.files[0];
+    if (!file) return;
+    state.sheet = false;
+    state.bc = { status: "reading", slot: state.sheetSlot };
+    go("barcode");
+    try {
+      const code = await readBarcode(file);
+      if (!code) { state.bc.status = "nocode"; render(); return; }
+      await findBarcode(code);
+    } catch (e) { state.bc.status = "error"; state.bc.error = e.message; render(); }
+    return;
+  }
   if (t.id === "pick-camera" || t.id === "pick-gallery") {
     const file = t.files && t.files[0];
     if (!file) return;
@@ -1042,6 +1206,12 @@ $app.addEventListener("change", async (ev) => {
 
 $app.addEventListener("input", (ev) => {
   const t = ev.target;
+  if (t.id === "bc-g" && state.bc?.product) {
+    state.bc.grams = t.value;
+    const out = document.getElementById("bc-kcal"); if (out) out.textContent = `${forGrams(state.bc.product, Number(t.value) || 0).calories} kcal`;
+    const lab = document.querySelector(".ex-result span"); if (lab) lab.textContent = `${Number(t.value) || 0} g`;
+    return;
+  }
   if (t.id === "ex-min" && state.exSheet && !state.exSheet.custom) {
     state.exSheet.minutes = t.value;
     const x = state.exSheet, preset = EXERCISES.find((e) => e[0] === x.kind);

@@ -580,3 +580,22 @@ a { color: var(--accent-deep); font-weight: 700; }
 .add-slot.small { padding: 8px; font-size: .88rem; border-width: 1.5px; }
 .ex-other .btn-row { margin-top: 4px; margin-bottom: 6px; }
 .ex-other .btn.small { padding: 10px 18px; }
+
+/* ---------- stage 3 ---------- */
+.big-actions { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.ba-emoji { font-size: 1.7rem; line-height: 30px; height: 30px; color: var(--accent-deep); font-weight: 900; }
+.meal-top .btn.small { white-space: nowrap; }
+.product { display: flex; gap: 12px; align-items: flex-start; }
+.product img { width: 72px; height: 72px; object-fit: contain; border-radius: 12px; background: #fff; flex: none; }
+.product div { display: grid; gap: 2px; min-width: 0; }
+.product span { color: var(--muted); font-size: .85rem; }
+label.btn { cursor: pointer; display: inline-flex; align-items: center; }
+.water { margin-top: 22px; }
+.glasses { display: flex; align-items: center; gap: 10px; background: var(--surface); border-radius: 18px; box-shadow: var(--shadow); padding: 10px 12px; }
+.glasses .icon-btn { width: 40px; height: 40px; font-size: 1.4rem; font-weight: 800; box-shadow: none; background: var(--surface-2); }
+.glasses .icon-btn.add { background: var(--accent); color: var(--accent-ink); }
+.glasses .icon-btn:disabled { opacity: .35; }
+.glass-row { flex: 1; display: flex; flex-wrap: wrap; gap: 5px; justify-content: center; }
+.glass { width: 16px; height: 22px; border: 2px solid #6ec3f2; border-top-width: 0; border-radius: 0 0 6px 6px; position: relative; overflow: hidden; }
+.glass.full { background: linear-gradient(#9fdcff, #4fb3ea); }
+.water .help { margin-top: 6px; }
