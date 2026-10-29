@@ -1,7 +1,7 @@
 import { openViewer } from "./viewer.js";
 import { readBarcode, lookupProduct, forGrams } from "./barcode.js";
 import { catSVG } from "./cat.js";
-import { ACTIVITY, PACES, paceOf, paceOptions, safeMinimum, suggestGoals, KCAL_PER_KG, EXERCISES, EFFORT, exerciseBurn, stepsBurn } from "./goals.js";
+import { ACTIVITY, PACES, paceOf, paceOptions, safeMinimum, suggestGoals, KCAL_PER_KG, EXERCISES, EFFORT, exerciseBurn, stepsBurn, learnUsualSteps } from "./goals.js";
 import { createStore } from "./store.js";
 import { askExercise, askAI, hasKey, loadAISettings, saveAISettings, testProvider, PROVIDERS } from "./ai.js";
 
@@ -168,7 +168,7 @@ const isMealDoc = (d) => !d.type || d.type === "meal";
 function dayBurn(docs) {
   const ex = docs.filter((d) => d.type === "exercise").reduce((n, d) => n + (d.burned || 0), 0);
   const st = docs.find((d) => d.type === "steps");
-  const sb = st ? stepsBurn(st.steps, state.goals?.profile).burned : 0;
+  const sb = st ? stepsBurn(st.steps, state.goals?.profile, state.usualSteps).burned : 0;
   return { exercise: ex, steps: sb, total: ex + sb };
 }
 
@@ -278,7 +278,7 @@ function summaryHTML(t, bubble, burn = { total: 0 }) {
 function exerciseSectionHTML() {
   const ex = state.meals.filter((d) => d.type === "exercise").sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
   const st = state.meals.find((d) => d.type === "steps");
-  const sb = st ? stepsBurn(st.steps, state.goals?.profile) : null;
+  const sb = st ? stepsBurn(st.steps, state.goals?.profile, state.usualSteps) : null;
   const emoji = (k) => (EXERCISES.find((e) => e[0] === k)?.[1] || "✨").split(" ")[0];
   return `<section class="slot">
     <div class="slot-head"><h2>Exercise</h2>${ex.length || sb?.burned ? `<span class="sum">🔥 ${dayBurn(state.meals).total} kcal</span>` : ""}</div>
@@ -300,7 +300,7 @@ function exerciseSectionHTML() {
         ${state.health === "error" ? `<span class="steps-note">Couldn't read steps: ${esc(state.healthError || "")}</span>` : ""}
         <button class="btn small" data-action="save-steps">Save</button>
         <span class="steps-note muted">Walks are already in your steps, so don't also add them as exercise.</span>
-        ${sb ? `<span class="steps-note">${sb.burned ? `🔥 ${sb.burned} kcal from steps over your usual ${sb.base.toLocaleString()}` : `Within your usual ${sb.base.toLocaleString()} steps, already counted`}</span>` : ""}
+        ${sb ? `<span class="steps-note">${sb.burned ? `🔥 ${sb.burned} kcal from steps over your usual ${sb.base.toLocaleString()}` : `Within your usual ${sb.base.toLocaleString()} steps, already counted`}${state.usualSteps ? " (learned from your last 2 weeks)" : ""}</span>` : ""}
       </div>
       <button class="add-slot" data-action="open-ex">+ Add exercise</button>
     </div>
@@ -349,9 +349,21 @@ function weekHTML() {
   return `<p class="week-note">📈 Last 7 days: you averaged <strong>${w.avg} kcal</strong> a day${w.burn ? ` (minus ${w.burn} burned)` : ""} over ${w.days} logged days. At this pace that's <strong>${pace}</strong>. <span>Estimate. Water and salt make the scale jump around.</span></p>`;
 }
 let weekTimer = null;
+let stepsLearnedFor = "";
+async function learnSteps() {
+  const today = iso(new Date());
+  if (stepsLearnedFor === today) return;
+  try {
+    const docs = await store.getRange(shiftDate(today, -14), shiftDate(today, -1));
+    const usual = learnUsualSteps(docs.filter((d) => d.type === "steps").map((d) => Number(d.steps) || 0));
+    stepsLearnedFor = today;
+    if (usual !== state.usualSteps) { state.usualSteps = usual; if (state.view === "day" || state.view === "settings") render(); }
+  } catch { /* try again next time */ }
+}
 function refreshWeek() {
   clearTimeout(weekTimer);
   weekTimer = setTimeout(async () => {
+    learnSteps();
     const maint = state.goals?.maintenance;
     if (!maint) { state.week = null; return; }
     const end = iso(new Date()), start = shiftDate(end, -6);
@@ -512,6 +524,7 @@ function renderSettings() {
     <section class="card">
       <h2>Daily goals</h2>
       ${state.goals ? `<p>${state.goals.calories} kcal · protein ${state.goals.protein} g · carbs ${state.goals.carbs} g · fat ${state.goals.fat} g</p>` : `<p>Not set yet. Munchkin can work them out for you.</p>`}
+      <p>${state.usualSteps ? `Your usual: about <strong>${state.usualSteps.toLocaleString()} steps a day</strong>, learned from your last 2 weeks. Steps above that count as extra calories burned.` : "Munchkin learns your usual steps after about a week of step counts. Until then it uses the usual for your activity level."}</p>
       <div class="btn-row"><button class="btn" data-action="goals">${state.goals ? "Change my goals" : "Set my goals"}</button></div>
     </section>
     ${isNative() ? "" : `<section class="card">
@@ -1025,6 +1038,28 @@ async function applyAction(m, act) {
   }
   if (state.meal === m) render();
 }
+
+// ---------- inside the Android app: the camera buttons use the real camera ----------
+const CAMERA_INPUTS = ["pick-camera", "pick-chat-camera", "pick-label", "pick-barcode"];
+document.addEventListener("click", async (ev) => {
+  const Cam = isNative() && window.Capacitor.Plugins?.Camera;
+  if (!Cam) return;
+  const label = ev.target.closest("label");
+  const input = label?.querySelector("input[type=file]") || (ev.target.matches?.("input[type=file]") ? ev.target : null);
+  if (!input || !CAMERA_INPUTS.includes(input.id)) return;
+  ev.preventDefault(); ev.stopPropagation();
+  try {
+    const photo = await Cam.getPhoto({ source: "CAMERA", resultType: "dataUrl", quality: 85, correctOrientation: true, saveToGallery: false });
+    if (!photo?.dataUrl) return;
+    const blob = await (await fetch(photo.dataUrl)).blob();
+    const file = new File([blob], "camera.jpg", { type: blob.type || "image/jpeg" });
+    const dt = new DataTransfer(); dt.items.add(file);
+    input.files = dt.files;
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  } catch (e) {
+    if (!/cancel/i.test(String(e?.message || e))) toast("Couldn't open the camera. Check that Munchkin may use it in your phone's settings.");
+  }
+}, true);
 
 // ---------- remembering open chats (survives the phone closing Munchkin in the background) ----------
 const OPEN_KEY = "munchkin.open";

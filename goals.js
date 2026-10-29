@@ -76,9 +76,20 @@ export function exerciseBurn(met, minutes, kg) {
 
 // Steps above what your chosen activity level already includes.
 const BASE_STEPS = { sedentary: 3000, light: 5000, moderate: 7000, active: 9000, very: 11000 };
-export function stepsBurn(steps, p) {
+// "usual" = the person's own typical steps, learned from their recent days (null until known).
+export function stepsBurn(steps, p, usual = null) {
   const kg = Number(p?.weight) || 65;
-  const base = BASE_STEPS[p?.activity] ?? 4000;
+  const base = usual ?? BASE_STEPS[p?.activity] ?? 4000;
   const extra = Math.max(0, Number(steps) - base);
   return { burned: Math.round(extra * 0.04 * (kg / 70)), base };
+}
+
+// Typical steps on normal days: the middle value of the last 14 days (excluding today),
+// once there are at least 7 days, so one big walking day doesn't throw it off.
+export function learnUsualSteps(days) {
+  const vals = days.filter((n) => n > 0).sort((a, b) => a - b);
+  if (vals.length < 7) return null;
+  const mid = Math.floor(vals.length / 2);
+  const median = vals.length % 2 ? vals[mid] : (vals[mid - 1] + vals[mid]) / 2;
+  return Math.round(median / 50) * 50;
 }

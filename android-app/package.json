@@ -8,6 +8,7 @@
     "@capacitor/android": "8.5.3",
     "@capacitor/app": "8.0.1",
     "@capacitor/app-launcher": "8.0.1",
+    "@capacitor/camera": "^8.2.5",
     "@capacitor/core": "8.5.3",
     "capacitor-health": "8.4.0",
     "firebase": "^12.19.0"
