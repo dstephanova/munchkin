@@ -714,6 +714,16 @@ function renderBarcode() {
 
 // ---------- water ----------
 const GLASS = 250;
+async function addWater(ml, date) {
+  const id = `water-${date}`;
+  try {
+    let current = date === state.date ? state.meals.find((d) => d.id === id) : null;
+    if (!current && store.get) current = await store.get(id).catch(() => null);
+    const total = Math.max(0, (current?.ml || 0) + ml);
+    await store.save({ id, type: "water", date, ml: total, createdAt: current?.createdAt || Date.now(), updatedAt: Date.now() });
+    toast(`💧 +${ml} ml water${date === iso(new Date()) ? "" : `, ${prettyDate(date).toLowerCase()}`}`);
+  } catch { toast("Couldn't add the water. Try the + button on the home screen."); }
+}
 function waterGoal() {
   const kg = Number(state.goals?.profile?.weight);
   return kg ? Math.round((kg * 33) / GLASS) * GLASS : 2000;
@@ -960,7 +970,7 @@ function newMeal(photo) {
 }
 
 async function saveMeal(m) {
-  const { _draft, _retried, ...clean } = m;
+  const { _draft, _retried, waterOnly, ...clean } = m;
   clean.totals = sumItems(clean.items);
   clean.updatedAt = Date.now();
   await store.save(clean);
@@ -1115,13 +1125,17 @@ async function runAI() {
     state.answers = {};
     m.estimate = !!res.estimate;
     if (res.countFailed) toast("Couldn't update the numbers this time. Send a message to try again.");
+    const prevItems = m.items;
     m.name = res.name;
     m.items = res.items;
+    // Plain water only: don't turn an empty chat into a food entry.
+    if (res.water?.only && !prevItems.length && !res.items.length) m.waterOnly = true;
     state.sending = false;
     if (res.action) await applyAction(m, res.action);
+    if (res.water) await addWater(res.water.ml, res.action?.day ? resolveDay(res.action.day) : (m.askOnly ? iso(new Date()) : m.date));
     m._retried = false;
     if (state.meal === m) { render(); scrollToEnd(); }
-    if (!m.askOnly) { try { await saveMeal(m); } catch { toast("Couldn't save. It will retry when you're online."); } }
+    if (!m.askOnly && !(m.waterOnly && !m.items.length)) { try { await saveMeal(m); } catch { toast("Couldn't save. It will retry when you're online."); } }
     rememberOpen();
   } catch (e) {
     stopAIStatus();

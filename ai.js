@@ -36,7 +36,9 @@ The person tells you or shows you what they ate, and may correct you afterwards.
 - When corrected, treat the correction as fact and give the updated numbers.
 - If it isn't food, say so kindly. Never lecture about diet.
 - Use simple formatting: short paragraphs, "* " bullet lines and **bold** are fine; no tables.
-- The app itself can add food to the diary and move it between meals and days. If the person asks you to add, log, save or move it (e.g. "just add it for dinner", "move this to yesterday"), never say you can't: just confirm in one short sentence (e.g. "Done, added to dinner!") and the app takes care of it.`;
+- What the app can do from this chat (and nothing else): add food or drinks to the diary, move an entry to another meal or day, and add drinks to the water counter. If the person asks for one of these, confirm in one short sentence (e.g. "Done, added to dinner!", "Added 500 ml to your water!") and the app does it.
+- Water counter rules: every non-alcoholic drink counts toward water (water, sparkling water, tea, coffee, juice, milk, soda, smoothies; alcohol-free beer too). Alcohol (beer, wine, spirits, cocktails) does NOT count toward water, only its calories count. Drinks with calories are also logged as food.
+- Never claim you did anything else (setting goals, logging exercise, changing settings, reminders). If asked, say kindly that you can't do that from the chat and where to find it in the app.`;
 
 // Step 2: a quick, cheap model turns that answer into numbers for the calorie card, plus tap-answers.
 const EXTRACT_RULES = `You turn a food-diary chat into numbers. Read the chat below between a person and Munchkin (a food helper).
@@ -45,9 +47,11 @@ Using Munchkin's LAST answer (and earlier messages for context), list the FULL m
 - If a macro is missing, estimate it sensibly. If nothing edible was eaten, return "items": [].
 - "questions": for EACH question Munchkin's last answer asks the person (max 3), give the question shortened (max 40 characters) and 2-4 very short tap-answers they could send back (max 30 characters each). Use the person's language. If Munchkin asks nothing, [].
 - "name": short meal name in the person's language, max 5 words.
+- "water_ml": total millilitres of drinks in the person's LAST message that count toward water: every non-alcoholic drink (water, sparkling water, tea, coffee, juice, milk, soda, alcohol-free beer). Alcohol does NOT count. Assume 250 ml per glass or cup if no size is given. 0 if none, and 0 when they are only correcting an earlier message.
+- "water_only": true only if the LAST message is just plain water / sparkling water / unsweetened tea with no calories and no food.
 - "action": ONLY if the person's LAST message asks to add / log / save the food, or to move it to a meal or day, return {"add": true, "slot": "breakfast" | "lunch" | "dinner" | "snack" | null, "day": "today" | "yesterday" | "YYYY-MM-DD" | null}. Otherwise null.
 Reply with ONLY this JSON:
-{"name": "", "estimate": false, "action": null, "questions": [{"question": "Which pack?", "options": ["500 g pack", "1 kg pack"]}], "items": [{"name": "food item", "amount": "e.g. 300 g", "calories": 0, "protein": 0, "carbs": 0, "fat": 0}]}`;
+{"name": "", "estimate": false, "action": null, "water_ml": 0, "water_only": false, "questions": [{"question": "Which pack?", "options": ["500 g pack", "1 kg pack"]}], "items": [{"name": "food item", "amount": "e.g. 300 g", "calories": 0, "protein": 0, "carbs": 0, "fat": 0}]}`;
 
 function cleanJSON(text) {
   try { return JSON.parse(text); } catch {}
@@ -209,6 +213,9 @@ async function fakeChat(turns, photo) {
   await new Promise((r) => setTimeout(r, 700));
   const last = (turns[turns.length - 1]?.text || "").toLowerCase();
   const slotWord = ["breakfast", "lunch", "dinner", "snack"].find((w) => last.includes(w));
+  if (/water/.test(last)) {
+    return { ...normalise({ reply: "Added 500 ml to your water! 💧", meal: { name: "Water", items: [] } }), water: { ml: 500, only: true } };
+  }
   if (/\b(add|move|log)\b/.test(last) && slotWord) {
     return { ...normalise({ reply: `Done, added to ${slotWord}!`, meal: { name: "Croissant", items: [{ name: "Croissant", amount: "1 medium", calories: 270, protein: 5, carbs: 31, fat: 14 }] } }),
       action: { add: true, slot: slotWord, day: /yesterday/.test(last) ? "yesterday" : "today" } };
@@ -477,6 +484,8 @@ function readNumbers(parsed, reply) {
   const m = parsed.meal || parsed;
   const numbers = normalise({ reply, meal: m });
   numbers.estimate = !!m.estimate;
+  const ml = Math.round(Number(m.water_ml) || 0);
+  numbers.water = ml > 0 && ml <= 5000 ? { ml, only: !!m.water_only } : null;
   const act = m.action;
   if (act && typeof act === "object" && (act.add || act.slot || act.day)) {
     numbers.action = {
