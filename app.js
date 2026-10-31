@@ -4,6 +4,7 @@ import { weightTrend, weeklyChange, cycleInfo, phaseOn, periodMarks, PHASE, addD
 import { catSVG } from "./cat.js";
 import { ACTIVITY, PACES, paceOf, paceOptions, safeMinimum, suggestGoals, KCAL_PER_KG, EXERCISES, EFFORT, exerciseBurn, stepsBurn, learnUsualSteps } from "./goals.js";
 import { createStore } from "./store.js";
+import { createCat } from "./cat-rig.js";
 import { askExercise, askAI, askBarcode, hasKey, loadAISettings, saveAISettings, testProvider, PROVIDERS } from "./ai.js";
 
 const demo = new URLSearchParams(location.search).has("demo");
@@ -137,9 +138,52 @@ const ICON = {
 };
 
 // ---------- screens ----------
+// ---------- the animated cat ----------
+const cats = { day: createCat({ width: 92 }), hero: createCat({ width: 170 }) };
+const catMood = () => { const h = new Date().getHours(); return h >= 22 || h < 6 ? "sleepy" : "idle"; };
+let pendingMood = null; // e.g. "munch" after a meal is added, played when you're back on the home screen
+function mountCats() {
+  for (const wrap of document.querySelectorAll("[data-cat]")) {
+    const cat = cats[wrap.dataset.cat];
+    if (!cat) continue;
+    cat.ready().then(() => {
+      if (!wrap.isConnected) return;
+      if (cat.canvas.parentNode !== wrap) wrap.appendChild(cat.canvas);
+      wrap.classList.add("has-anim");
+      cat.start();
+    }).catch(() => { /* the still picture stays */ });
+    if (wrap.dataset.cat === "hero") cat.setBase(state.view === "login" ? "hello" : "idle");
+    else catMoodsForToday(cat);
+  }
+}
+function catMoodsForToday(cat) {
+  cat.setBase(catMood());
+  const today = iso(new Date());
+  let seen = null;
+  try { seen = localStorage.getItem("munchkin.hello"); } catch {}
+  if (seen !== today) { try { localStorage.setItem("munchkin.hello", today); } catch {} cat.play("hello", 3.2); return; }
+  if (pendingMood) { cat.play(pendingMood, pendingMood === "munch" ? 4.5 : 2.6); pendingMood = null; return; }
+  // protein goal reached today: a little cheer, once a day
+  const g = goalsOn(today);
+  if (g?.protein && state.date === today && state.meals?.length) {
+    const t = sumItems(state.meals.filter(isMealDoc).flatMap((m) => m.items || []));
+    let cheered = null;
+    try { cheered = localStorage.getItem("munchkin.cheer"); } catch {}
+    if (t.protein >= g.protein && cheered !== today) { try { localStorage.setItem("munchkin.cheer", today); } catch {} cat.play("happy", 2.6); }
+  }
+}
+$app.addEventListener("click", (e) => {
+  const wrap = e.target.closest?.("[data-cat]");
+  if (wrap && cats[wrap.dataset.cat]) cats[wrap.dataset.cat].play("happy", 1.6);
+});
+
 function render() {
+  renderView();
+  mountCats();
+}
+function renderView() {
   if (state.view === "loading") {
-    $app.innerHTML = `<div class="login"><div class="inner"><div class="hero-cat">${catPic()}</div><p>Waking Munchkin up…</p></div></div>`;
+    $app.innerHTML = `<div class="login"><div class="inner"><div class="hero-cat" data-cat="hero">${catPic()}</div><p>Waking Munchkin up…</p></div></div>`;
     return;
   }
   if (state.view === "login") return renderLogin();
@@ -158,7 +202,7 @@ function renderLogin() {
   $app.innerHTML = `
   <main class="login">
     <div class="inner">
-      <div class="hero-cat">${catPic()}</div>
+      <div class="hero-cat" data-cat="hero">${catPic()}</div>
       <h1>Munchkin</h1>
       <p>Snap what you eat. Munchkin guesses the calories, and you fix anything by chatting.</p>
       <button class="google-btn" data-action="signin">${ICON.google} Log in with Google</button>
@@ -254,7 +298,7 @@ function summaryHTML(t, bubble, burn = { total: 0 }) {
   const g = g0 ? { ...g0, calories: g0.calories + burn.total } : null;
   if (!g) {
     return `<section class="summary">
-      <div class="cat-wrap">${catPic()}</div>
+      <div class="cat-wrap" data-cat="day">${catPic()}</div>
       <div>
         <div class="kcal">${t.calories}<small>kcal</small></div>
         <p class="bubble">${bubble}</p>
@@ -268,7 +312,7 @@ function summaryHTML(t, bubble, burn = { total: 0 }) {
   const leftText = left >= 0 ? `<strong>${left}</strong> kcal left` : `<strong>${-left}</strong> kcal over your goal`;
   const row = (key, label, cls) => `<div class="mrow"><span class="mlabel"><i class="${cls}"></i>${label}</span><span class="mval">${t[key]} / ${g[key]} g</span>${bar(t[key], g[key], cls)}</div>`;
   return `<section class="summary goals">
-    <div class="cat-wrap">${catPic()}</div>
+    <div class="cat-wrap" data-cat="day">${catPic()}</div>
     <div class="ginfo">
       <div class="kcal">${t.calories}<small> / ${g.calories} kcal</small></div>
       <p class="bubble">${leftText}</p>
@@ -1422,6 +1466,7 @@ function newMeal(photo) {
 
 async function saveMeal(m) {
   const { _draft, _retried, waterOnly, ...clean } = m;
+  if (_draft && clean.items?.length) pendingMood = "munch";
   clean.totals = sumItems(clean.items);
   clean.updatedAt = Date.now();
   await store.save(clean);
@@ -1758,7 +1803,7 @@ $app.addEventListener("click", async (ev) => {
       chat: [{ role: "user", text: `Scanned barcode ${p.code}: ${g} g` },
              { role: "model", text: `From the food database: **${name}**, ${g} g = ${t.calories} kcal (protein ${t.protein} g, carbs ${t.carbs} g, fat ${t.fat} g). Tell me if you want to change anything.` }],
       createdAt: Date.now(), updatedAt: Date.now() };
-    try { await saveMeal(meal); toast(`Added ${t.calories} kcal 🐱`); } catch { toast("Couldn't save. Try again."); return; }
+    try { await saveMeal(meal); pendingMood = "munch"; toast(`Added ${t.calories} kcal 🐱`); } catch { toast("Couldn't save. Try again."); return; }
     state.bc = null; back();
   } else if (a === "open-ex") {
     state.exSheet = { kind: "walk", minutes: 30, effort: "moderate" }; render();
@@ -1868,7 +1913,7 @@ $app.addEventListener("click", async (ev) => {
     const meal = { id: store.newId(), date: state.date, slot: state.sheetSlot || defaultSlot(), name: name.slice(0, 60), photo: null, manual: true,
       items: [{ name: name.slice(0, 60), amount: "", calories: n(f.calories), protein: n(f.protein), carbs: n(f.carbs), fat: n(f.fat) }],
       chat: [], createdAt: Date.now(), updatedAt: Date.now() };
-    try { await saveMeal(meal); toast(`Added to ${SLOT_NAME[meal.slot].toLowerCase()} 🐱`); state.manual = null; back(); }
+    try { await saveMeal(meal); pendingMood = "munch"; toast(`Added to ${SLOT_NAME[meal.slot].toLowerCase()} 🐱`); state.manual = null; back(); }
     catch { toast("Couldn't save. Try again."); }
   } else if (a === "type-meal") {
     state.sheet = false;

@@ -687,3 +687,7 @@ body.dragging { overflow: hidden; }
 .slot.drop-here { outline: 2px dashed var(--accent); outline-offset: 6px; border-radius: 18px; background: color-mix(in srgb, var(--accent) 8%, transparent); }
 .goal-basis { font-weight: 600; color: var(--muted); }
 #steps-save[hidden] { display: none; }
+/* animated cat: the canvas is bigger than her box so jumps and "nom nom nom" can float outside it */
+[data-cat] { position: relative; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+[data-cat] .cat-anim { position: absolute; pointer-events: none; z-index: 2; }
+[data-cat].has-anim .cat-pic { visibility: hidden; }
