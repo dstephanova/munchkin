@@ -1,5 +1,6 @@
 import { openViewer } from "./viewer.js";
 import { readBarcode, lookupProduct, forGrams } from "./barcode.js";
+import { weightTrend, weeklyChange, cycleInfo, phaseOn, periodMarks, PHASE, addDays } from "./body.js";
 import { catSVG } from "./cat.js";
 import { ACTIVITY, PACES, paceOf, paceOptions, safeMinimum, suggestGoals, KCAL_PER_KG, EXERCISES, EFFORT, exerciseBurn, stepsBurn, learnUsualSteps } from "./goals.js";
 import { createStore } from "./store.js";
@@ -146,6 +147,7 @@ function render() {
   if (state.view === "goals") return renderGoals();
   if (state.view === "calendar") return renderCalendar();
   if (state.view === "barcode") return renderBarcode();
+  if (state.view === "body") return renderBody();
   if (state.view === "meal") return renderMeal();
   return renderDay();
 }
@@ -226,6 +228,7 @@ function renderDay() {
       <button class="icon-btn" data-action="next-day" aria-label="Next day" ${isToday ? "disabled" : ""}>${ICON.next}</button>
     </nav>
     ${summaryHTML(t, bubble, dayBurn(state.meals))}
+    ${bodyCardHTML()}
     ${weekHTML()}
     ${slotsHTML}
     ${waterHTML()}
@@ -346,7 +349,9 @@ function weekHTML() {
   if (!w || w.days < 2) return "";
   const kg = w.kgWeek;
   const pace = Math.abs(kg) < 0.05 ? "about steady" : `about ${kg > 0 ? "+" : "−"}${Math.abs(kg).toFixed(2)} kg a week`;
-  return `<p class="week-note">📈 Last 7 days: you averaged <strong>${w.avg} kcal</strong> a day${w.burn ? ` (minus ${w.burn} burned)` : ""} over ${w.days} logged days. At this pace that's <strong>${pace}</strong>. <span>Estimate. Water and salt make the scale jump around.</span></p>`;
+  const ph = todayPhase();
+  const cyc = ph && (ph.phase === "pre" || ph.phase === "period") ? ` <span>${ph.phase === "pre" ? "Your period is due soon, so the scale may read higher this week from water." : "During your period the scale often reads higher from water."}</span>` : "";
+  return `<p class="week-note">📈 Last 7 days: you averaged <strong>${w.avg} kcal</strong> a day${w.burn ? ` (minus ${w.burn} burned)` : ""} over ${w.days} logged days. At this pace that's <strong>${pace}</strong>. <span>Estimate. Water and salt make the scale jump around.</span>${cyc}</p>`;
 }
 let weekTimer = null;
 let stepsLearnedFor = "";
@@ -576,6 +581,7 @@ function renderGoals() {
       <h2>About you</h2>
       <p>Munchkin uses this to work out what your body needs each day.</p>
       <div class="chips">${choice("sex", "female", "Woman")}${choice("sex", "male", "Man")}</div>
+      ${p.sex === "female" ? `<label class="toggle"><input type="checkbox" id="g-cycle" ${p.trackCycle === false ? "" : "checked"}><span><strong>Track my cycle</strong><small>Shows your cycle phases and explains why you might feel heavier or lighter.</small></span></label>` : ""}
       <div class="field-row">
         <div class="field"><label for="g-age">Age</label><input id="g-age" type="number" inputmode="numeric" data-pf="age" value="${esc(p.age)}" placeholder="e.g. 30"></div>
         <div class="field"><label for="g-height">Height (cm)</label><input id="g-height" type="number" inputmode="numeric" data-pf="height" value="${esc(p.height)}" placeholder="e.g. 165"></div>
@@ -768,13 +774,14 @@ readHealthLink();
 const isNative = () => !!window.Capacitor?.isNativePlatform?.();
 const HealthAPI = () => (isNative() ? window.Capacitor.Plugins?.HealthPlugin : null);
 const HEALTH_PERMS = ["READ_STEPS", "READ_ACTIVE_CALORIES"];
+const EXTRA_PERMS = ["READ_WEIGHT"];
 async function syncHealth(ask = false) {
   const H = HealthAPI();
   if (!H || !state.user || !store) return;
   try {
     const av = await H.isHealthAvailable();
     if (!av.available) { state.health = "missing"; if (state.view === "day") render(); return; }
-    if (ask) await H.requestHealthPermissions({ permissions: HEALTH_PERMS });
+    if (ask) await H.requestHealthPermissions({ permissions: [...HEALTH_PERMS, ...EXTRA_PERMS] });
     const perm = await H.checkHealthPermissions({ permissions: HEALTH_PERMS });
     const ok = perm.permissions && Object.values(perm.permissions).length && Object.values(perm.permissions).every(Boolean);
     if (!ok) { state.health = "ask"; if (state.view === "day") render(); return; }
@@ -784,6 +791,7 @@ async function syncHealth(ask = false) {
       const r = await H.queryAggregated({ startDate: start.toISOString(), endDate: now.toISOString(), dataType, bucket: "day" });
       return Math.round((r.aggregatedData || []).reduce((n, x) => n + (Number(x.value) || 0), 0));
     };
+    syncHealthWeight(H);
     const steps = await sum("steps");
     const active = await sum("active-calories").catch(() => 0);
     const date = iso(now), id = `steps-${date}`;
@@ -795,9 +803,29 @@ async function syncHealth(ask = false) {
     if (state.view === "day") render();
   }
 }
+async function syncHealthWeight(H) {
+  try {
+    const p = await H.checkHealthPermissions({ permissions: EXTRA_PERMS });
+    if (!p.permissions || !Object.values(p.permissions).every(Boolean)) return;
+    const end = new Date(), start = new Date(end.getTime() - 30 * 86400000);
+    const r = await H.queryRecords({ startDate: start.toISOString(), endDate: end.toISOString(), dataType: "weight" });
+    const byDay = {};
+    for (const rec of r.records || []) { const d = iso(new Date(rec.startDate)); byDay[d] = rec; }
+    const have = new Map((state.body?.weights || []).map((e) => [e.date, e]));
+    let n = 0;
+    for (const [d, rec] of Object.entries(byDay)) {
+      const ex = have.get(d);
+      if (ex && !ex.source) continue; // a weight typed by hand wins
+      const kg = Math.round(Number(rec.value) * 10) / 10;
+      if (!kg || (ex && ex.kg === kg)) continue;
+      await saveWeight(kg, d, "Health Connect", new Date(rec.startDate).getHours()); n++;
+    }
+    if (n) loadBody();
+  } catch { /* weight is optional */ }
+}
 if (isNative()) {
   const App = window.Capacitor.Plugins?.App;
-  App?.addListener?.("resume", () => syncHealth());
+  App?.addListener?.("resume", () => { syncHealth(); syncCycle(); });
   // Android back button: go back inside Munchkin, or leave the app from the home screen.
   App?.addListener?.("backButton", () => {
     if (state.view !== "day" || document.querySelector(".viewer:not([hidden])")) history.back();
@@ -826,6 +854,139 @@ async function syncKeysDown() {
   } catch { /* stays local */ }
 }
 
+
+// ---------- weight & cycle ----------
+const cycleOn = () => state.goals?.profile?.sex === "female" && state.goals?.profile?.trackCycle !== false;
+async function loadBody() {
+  if (!store || !state.user) return;
+  const today = iso(new Date());
+  try {
+    const docs = await store.getRange(shiftDate(today, -400), today);
+    const weights = docs.filter((d) => d.type === "weight");
+    const period = docs.filter((d) => d.type === "period");
+    state.body = {
+      weights: weightTrend(weights),
+      periodDays: period.map((d) => d.date),
+      manualStarts: period.filter((d) => d.start).map((d) => d.date),
+    };
+    state.cycle = cycleInfo(state.body.periodDays, state.body.manualStarts);
+  } catch { /* keep what we had */ }
+  if (["day", "body", "calendar"].includes(state.view)) render();
+}
+function todayPhase() {
+  if (!cycleOn() || !state.cycle?.starts?.length) return null;
+  return phaseOn(iso(new Date()), state.cycle);
+}
+function bodyCardHTML() {
+  const w = state.body?.weights || [];
+  const last = w[w.length - 1];
+  const ch = weeklyChange(w);
+  const ph = todayPhase();
+  if (!last && !cycleOn()) {
+    return `<button class="body-card" data-action="body"><span>⚖️</span><span class="bc-main"><strong>Weigh in</strong><small>Track your weight trend</small></span><span class="bc-go">›</span></button>`;
+  }
+  return `<button class="body-card" data-action="body">
+    <span>⚖️</span>
+    <span class="bc-main">
+      <strong>${last ? `${last.kg.toFixed(1)} kg` : "Weigh in"}${last && last.trend !== last.kg ? ` <small>· trend ${last.trend.toFixed(1)}</small>` : ""}</strong>
+      <small>${ch != null ? `${ch > 0 ? "+" : ch < 0 ? "−" : ""}${Math.abs(ch).toFixed(1)} kg this week` : last ? `Last weigh-in ${prettyDate(last.date).toLowerCase()}` : "Track your weight trend"}${ph ? ` · ${PHASE[ph.phase].emoji} ${PHASE[ph.phase].name}` : ""}</small>
+    </span><span class="bc-go">›</span></button>`;
+}
+function weightChartSVG(points, marks, from, to) {
+  const W = 340, H = 170, pl = 34, pr = 10, pt = 10, pb = 22;
+  const span = Math.max(1, Math.round((new Date(to) - new Date(from)) / 86400000));
+  const x = (d) => pl + ((new Date(d) - new Date(from)) / 86400000 / span) * (W - pl - pr);
+  if (!points.length) return "";
+  const vals = points.flatMap((p) => [p.kg, p.trend]);
+  let lo = Math.floor(Math.min(...vals) - 0.5), hi = Math.ceil(Math.max(...vals) + 0.5);
+  if (hi - lo < 2) { hi += 1; lo -= 1; }
+  const y = (v) => pt + (1 - (v - lo) / (hi - lo)) * (H - pt - pb);
+  const bands = Object.entries(marks).map(([d, k]) => `<rect x="${x(d) - 2}" y="${pt}" width="${Math.max(3, (W - pl - pr) / span)}" height="${H - pt - pb}" class="band ${k}"/>`).join("");
+  const ticks = [lo, (lo + hi) / 2, hi].map((v) => `<text x="${pl - 6}" y="${y(v) + 4}" text-anchor="end">${v.toFixed(v % 1 ? 1 : 0)}</text><line x1="${pl}" x2="${W - pr}" y1="${y(v)}" y2="${y(v)}" class="grid"/>`).join("");
+  const line = points.map((p, i) => `${i ? "L" : "M"}${x(p.date).toFixed(1)} ${y(p.trend).toFixed(1)}`).join(" ");
+  const dots = points.map((p) => `<circle cx="${x(p.date).toFixed(1)}" cy="${y(p.kg).toFixed(1)}" r="3.5" class="dot"/>`).join("");
+  const fmt = (d) => new Date(d).toLocaleDateString(undefined, { day: "numeric", month: "short" });
+  return `<svg class="wchart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Weight chart">
+    ${bands}${ticks}<path d="${line}" class="trend"/>${dots}
+    <text x="${pl}" y="${H - 6}">${fmt(from)}</text><text x="${W - pr}" y="${H - 6}" text-anchor="end">${fmt(to)}</text></svg>`;
+}
+function renderBody() {
+  const today = iso(new Date());
+  const w = state.body?.weights || [];
+  const last = w[w.length - 1];
+  const ch = weeklyChange(w);
+  const from = shiftDate(today, -44);
+  const pts = w.filter((p) => p.date >= from);
+  const marks = cycleOn() && state.cycle ? periodMarks(state.cycle, from, today) : {};
+  const ph = todayPhase();
+  const prof = state.goals?.profile;
+  const goalW = Number(prof?.weight);
+  const suggestUpdate = last && goalW && Math.abs(last.trend - goalW) >= 1;
+  const showTip = last && last.date === today && last.hour != null && last.hour >= 11;
+  $app.innerHTML = `
+  <main class="screen">
+    <header class="topbar">
+      <button class="icon-btn" data-action="back" aria-label="Back">${ICON.back}</button>
+      <h1>${cycleOn() ? "Weight & cycle" : "Weight"}</h1>
+    </header>
+    <section class="card">
+      <h2>Weigh in</h2>
+      <div class="field-row two">
+        <div class="field"><label for="w-kg">Weight (kg)</label><input id="w-kg" type="number" inputmode="decimal" step="0.1" placeholder="e.g. 66.7"></div>
+        <div class="field"><label for="w-date">Day</label><input id="w-date" type="date" value="${today}" max="${today}"></div>
+      </div>
+      <div class="btn-row"><button class="btn" data-action="save-weight">Save</button></div>
+      <p class="help">Morning weigh-ins compare best: after the toilet, before eating or drinking, same scale.</p>
+      ${showTip ? `<p class="help tip">Today's weigh-in was later in the day, so it may read 0.5–1.5 kg higher from food and drinks.</p>` : ""}
+    </section>
+    <section class="card">
+      <h2>Your trend</h2>
+      ${last ? `<div class="wstats"><div><strong>${last.trend.toFixed(1)} kg</strong><small>trend</small></div><div><strong>${ch == null ? "—" : `${ch > 0 ? "+" : ch < 0 ? "−" : ""}${Math.abs(ch).toFixed(1)} kg`}</strong><small>per week</small></div><div><strong>${last.kg.toFixed(1)} kg</strong><small>last weigh-in</small></div></div>
+      ${weightChartSVG(pts, marks, from, today)}
+      <p class="help">Dots are your weigh-ins; the line is your trend, which ignores day-to-day water jumps.${cycleOn() ? " Pink bands are period days (lighter = predicted)." : ""}</p>
+      ${suggestUpdate ? `<div class="btn-row"><button class="btn ghost" data-action="weight-goals">Update my goals to ${last.trend.toFixed(1)} kg</button></div>` : ""}
+      <ul class="wlist">${[...w].reverse().slice(0, 8).map((e) => `<li><span>${prettyDate(e.date)}${e.source ? ` <em>${esc(e.source)}</em>` : ""}</span><span>${e.kg.toFixed(1)} kg <button class="link-btn" data-action="del-weight" data-date="${e.date}" aria-label="Delete">✕</button></span></li>`).join("")}</ul>`
+      : `<p>No weigh-ins yet. Add your first one above.</p>`}
+    </section>
+    ${cycleOn() ? `<section class="card">
+      <h2>Cycle</h2>
+      ${ph ? `<p class="phase"><span>${PHASE[ph.phase].emoji}</span><span><strong>${PHASE[ph.phase].name}</strong><small>${PHASE[ph.phase].text(ph)}</small></span></p>
+        <p class="help">Next period expected around <strong>${new Date(ph.next).toLocaleDateString(undefined, { day: "numeric", month: "long" })}</strong> · cycle about ${state.cycle.cycleLen} days${state.cycle.learned ? " (learned)" : " (default until Munchkin has 2 periods)"}.</p>`
+      : `<p>Munchkin doesn't know your cycle yet. Tap below when your period starts${isNative() ? ", or connect your period tracker" : ""}.</p>`}
+      <div class="btn-row">
+        <button class="btn" data-action="period-start">🩸 My period started today</button>
+        ${isNative() ? `<button class="btn ghost" data-action="cycle-connect">Connect my period tracker</button>` : ""}
+      </div>
+      <details class="ex-other"><summary>Started on another day?</summary>
+        <div class="field-row two"><div class="field"><input id="p-date" type="date" max="${today}" value="${today}"></div><div class="btn-row"><button class="btn small" data-action="period-start-on">Save</button></div></div>
+      </details>
+      ${state.cycleStatus ? `<p class="help">${esc(state.cycleStatus)}</p>` : ""}
+      <p class="help">Reads from any tracker app that shares with Health Connect. Your cycle stays private in your own diary.</p>
+    </section>` : ""}
+  </main>`;
+}
+async function saveWeight(kg, date, source = "", hour = null) {
+  await store.save({ id: `weight-${date}`, type: "weight", date, kg: Math.round(kg * 10) / 10, hour, source, createdAt: Date.now(), updatedAt: Date.now() });
+}
+async function syncCycle(ask = false) {
+  const C = isNative() && window.Capacitor.Plugins?.Cycle;
+  if (!C || !cycleOn() || !store || !state.user) return;
+  try {
+    let st = await C.status();
+    if (!st.available) { state.cycleStatus = "Health Connect isn't on this phone."; return; }
+    if (!st.granted && ask) st = { granted: (await C.requestAccess()).granted };
+    if (!st.granted) { if (ask) state.cycleStatus = "Munchkin wasn't allowed to read your period data."; return; }
+    const end = new Date(), start = new Date(end.getTime() - 400 * 86400000);
+    const r = await C.readPeriods({ startDate: start.toISOString(), endDate: end.toISOString() });
+    const have = new Set(state.body?.periodDays || []);
+    const fresh = (r.days || []).filter((d) => !have.has(d));
+    for (const d of fresh) await store.save({ id: `period-${d}`, type: "period", date: d, source: "Health Connect", createdAt: Date.now(), updatedAt: Date.now() });
+    state.cycleStatus = `Synced from your period tracker${fresh.length ? ` (${fresh.length} new day${fresh.length > 1 ? "s" : ""})` : ""}.`;
+    if (fresh.length) await loadBody();
+  } catch (e) { state.cycleStatus = "Couldn't read your period data: " + String(e?.message || e).slice(0, 100); }
+  if (state.view === "body") render();
+}
+
 // ---------- calendar ----------
 async function openCalendar() {
   const d = fromIso(state.date);
@@ -848,6 +1009,9 @@ async function loadCalendarMonth() {
       if (!food.length) continue;
       days[date] = { calories: sumItems(food.flatMap((m) => m.items || [])).calories, meals: food.length, burned: dayBurn(list).total };
     }
+    c.weights = Object.fromEntries(meals.filter((m) => m.type === "weight").map((m) => [m.date, m.kg]));
+    const lastDay = iso(new Date(c.year, c.month + 1, 0));
+    c.marks = cycleOn() && state.cycle ? periodMarks(state.cycle, start, lastDay) : {};
     c.days = days;
   } catch {
     c.days = {};
@@ -871,12 +1035,12 @@ function renderCalendar() {
   for (let day = 1; day <= daysInMonth; day++) {
     const key = iso(new Date(c.year, c.month, day));
     const info = c.days?.[key];
-    const future = key > today;
+    const future = key > today && !(c.marks?.[key] === "predicted");
     if (info) { logged++; total += info.calories; }
     const dayGoal = goal + (info?.burned || 0);
     const status = !info ? "" : goal ? (info.calories > dayGoal * 1.05 ? "over" : info.calories >= dayGoal * 0.85 ? "near" : "under") : "logged";
     cells += `<button class="cal-cell ${status} ${key === today ? "today" : ""} ${key === state.date ? "picked" : ""}" data-action="cal-day" data-date="${key}" ${future ? "disabled" : ""}>
-      <span class="num">${day}</span>${info ? `<span class="ck">${info.calories}</span>` : ""}</button>`;
+      <span class="num">${day}</span>${info ? `<span class="ck">${info.calories}</span>` : ""}${c.weights?.[key] ? `<span class="cw">⚖️${Number(c.weights[key]).toFixed(1)}</span>` : ""}${c.marks?.[key] ? `<i class="pdot ${c.marks[key]}"></i>` : ""}</button>`;
   }
   $app.innerHTML = `
   <main class="screen">
@@ -929,7 +1093,7 @@ function back() {
   else go("day");
 }
 window.addEventListener("popstate", () => {
-  if (["meal", "settings", "goals", "calendar", "barcode"].includes(state.view)) {
+  if (["meal", "settings", "goals", "calendar", "barcode", "body"].includes(state.view)) {
     state.settingsStatus = null;
     go("day");
   }
@@ -1185,6 +1349,30 @@ $app.addEventListener("click", async (ev) => {
   if (a === "signin") {
     state.loginError = "";
     try { await store.signIn(); } catch (e) { state.loginError = e.message; render(); }
+  } else if (a === "body") {
+    go("body"); loadBody();
+  } else if (a === "save-weight") {
+    const kg = Number(String(document.getElementById("w-kg")?.value || "").replace(",", "."));
+    const date = document.getElementById("w-date")?.value || iso(new Date());
+    if (!(kg > 25 && kg < 350)) { toast("Type your weight in kg, e.g. 66.7"); return; }
+    try { await saveWeight(kg, date, "", date === iso(new Date()) ? new Date().getHours() : null); toast(`⚖️ ${kg.toFixed(1)} kg saved`); await loadBody(); }
+    catch { toast("Couldn't save. Try again."); }
+  } else if (a === "del-weight") {
+    try { await store.remove(`weight-${el.dataset.date}`); await loadBody(); } catch { toast("Couldn't delete. Try again."); }
+  } else if (a === "weight-goals") {
+    const g = state.goals, last = state.body.weights[state.body.weights.length - 1];
+    const profile = { ...g.profile, weight: last.trend };
+    const sug = suggestGoals(profile);
+    const edited = new Set(g.edited || []);
+    const next = { ...g, profile, maintenance: sug?.maintenance || g.maintenance, updatedAt: Date.now() };
+    if (sug) for (const k of ["calories", "protein", "carbs", "fat"]) if (!edited.has(k)) next[k] = sug[k];
+    try { await store.saveGoals(next); toast(`Goals updated for ${last.trend.toFixed(1)} kg`); } catch { toast("Couldn't save. Try again."); }
+  } else if (a === "period-start" || a === "period-start-on") {
+    const d = a === "period-start" ? iso(new Date()) : (document.getElementById("p-date")?.value || iso(new Date()));
+    try { await store.save({ id: `period-${d}`, type: "period", date: d, start: true, source: "", createdAt: Date.now(), updatedAt: Date.now() }); toast("🩸 Saved"); await loadBody(); }
+    catch { toast("Couldn't save. Try again."); }
+  } else if (a === "cycle-connect") {
+    await syncCycle(true); render();
   } else if (a === "health-connect") {
     await syncHealth(true);
   } else if (a === "health-store") {
@@ -1465,6 +1653,8 @@ $app.addEventListener("change", async (ev) => {
     go("meal");
     const rest = [...t.files].slice(1);
     if (rest.length) addChatPhoto(rest); // extra photos wait to be sent with the first message
+  } else if (t.id === "g-cycle") {
+    state.goalForm.profile.trackCycle = t.checked;
   } else if (t.name === "provider") {
     const s = loadAISettings(); s.provider = t.value; saveAISettings(s);
     state.settingsStatus = null; state.showKey = false; render(); syncKeysUp();
@@ -1553,8 +1743,9 @@ async function start() {
     syncKeysDown();
     applyHealthLink();
     syncHealth();
+    loadBody().then(() => syncCycle());
     restoreOpen();
-    unsubGoals = store.watchGoals((g) => { state.goals = g; if (state.view === "day" || state.view === "settings") render(); refreshWeek(); });
+    unsubGoals = store.watchGoals((g) => { state.goals = g; state.cycle && null; if (state.view === "day" || state.view === "settings") render(); refreshWeek(); });
     render();
   });
   if ("serviceWorker" in navigator && !demo) {
