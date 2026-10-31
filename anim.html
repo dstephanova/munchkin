@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Munchkin moves</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@600;700&display=swap" rel="stylesheet">
 <style>
   :root { --bg:#f6f0ff; --card:#fff; --ink:#2b1745; --soft:#7b6a93; --accent:#7c3aed; --accent2:#efe5ff; --line:#e4d8f7; }
   @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#170d24; --card:#22152f; --ink:#f3eaff; --soft:#b9a6d3; --accent:#a78bfa; --accent2:#33224a; --line:#3a2a52; } }
@@ -31,7 +32,7 @@
     <button class="state on" data-s="idle">Idle</button>
     <button class="state" data-s="happy">Happy</button>
     <button class="state" data-s="munch">Munch</button>
-    <button class="state" data-s="wave">Wave</button>
+    <button class="state" data-s="hello">Hello</button>
     <button class="state" data-s="sleepy">Sleepy</button>
   </div>
   <div class="row">
@@ -44,9 +45,9 @@
 </main>
 <script>
 // ---- rig: where each cropped piece sits on the original 1254px canvas (pieces are saved at half size) ----
-const OFF = {"tail":[722,603],"body":[240,621],"bib":[387,727],"paw_r":[656,757],"paw_l":[240,720],"foot_r":[615,1048],"foot_l":[264,1044],"ear_r":[708,129],"ear_l":[157,81],"head":[105,121],"nose":[539,565],"blush_l":[208,527],"blush_r":[775,613],"whiskers_r":[851,644],"whiskers_l":[73,553]};
+const OFF = {"tail":[722,603],"body":[240,621],"bib":[387,727],"paw_r":[656,757],"paw_l":[240,720],"foot_r":[615,1048],"foot_l":[264,1044],"ear_r":[655,129],"ear_l":[157,81],"head":[105,121],"nose":[539,565],"blush_l":[208,527],"blush_r":[775,613],"whiskers_r":[851,644],"whiskers_l":[73,553]};
 const ORDER = ["tail","body","bib","paw_r","paw_l","foot_r","foot_l","ear_r","ear_l","head","nose","blush_l","blush_r","whiskers_r","whiskers_l"];
-const PIV = { ground:[580,1195], body:[580,1185], neck:[575,745], tail:[790,1035], earL:[410,395], earR:[800,440],
+const PIV = { ground:[580,1195], body:[580,1185], neck:[575,745], tail:[790,1035], earL:[440,400], earR:[770,440],
   pawL:[420,765], pawR:[700,790], whiskL:[262,605], whiskR:[862,690], blushL:[283,593], blushR:[846,673] };
 // which pieces cast a soft shadow on what's already drawn underneath (offset in canvas units)
 const CAST = { body:[4,10,14,.22], paw_r:[3,12,12,.28], paw_l:[3,12,12,.28], head:[6,24,22,.30], bib:[2,6,8,.18] };
@@ -60,7 +61,7 @@ const load = (n) => new Promise((ok) => { const i = new Image(); i.onload = () =
 const D = Math.PI / 180;
 const ss = (x) => x <= 0 ? 0 : x >= 1 ? 1 : x * x * (3 - 2 * x);
 function flick(t, period, off) { const p = ((t + off) % period) / period * period; return p < 0.3 ? Math.sin(Math.PI * p / 0.3) : 0; }
-const BASE = { rootY:0, rootSx:1, rootSy:1, bodySx:1, bodySy:1, headRot:0, headDx:0, headDy:0, earL:0, earR:0, tail:0, pawL:0, pawR:0, whisk:0, blush:1, shadow:1, z:0, nom:0 };
+const BASE = { rootY:0, rootSx:1, rootSy:1, bodySx:1, bodySy:1, headRot:0, headDx:0, headDy:0, earL:0, earR:0, tail:0, pawL:0, pawR:0, whisk:0, blush:1, shadow:1, z:0, nom:0, hi:0 };
 
 const STATES = {
   idle(t) {
@@ -83,10 +84,16 @@ const STATES = {
     return { bodySy:1 + .012 * b, bodySx:1 - .006 * b, headDy:7 * c, headRot:-2 + 1.5 * Math.sin(t * 1.3), pawL:-12 - 4 * c, pawR:12 + 4 * c,
       blush:1.06 + .1 * (.5 + .5 * Math.sin(t * 4)), tail:8 * Math.sin(t * 2.4), whisk:4 * c, earL:-3 * c, earR:3 * c, nom:1 };
   },
-  wave(t, st) {
-    const b = Math.sin(t * 2.2), w = Math.sin(st * 9);
-    return { bodySy:1 + .012 * b, bodySx:1 - .006 * b, pawR:-44 - 14 * w, headRot:4 + 1.5 * w, earR:6, earL:-2,
-      tail:9 * Math.sin(t * 2.6), whisk:3 * Math.sin(t * 3), blush:1.05 };
+  hello(t, st) {
+    const T = 2.6, p = (st % T) / T, b = Math.sin(t * 2.2);
+    const tilt = p < .28 ? ss(p / .28) : p < .68 ? 1 : 1 - ss((p - .68) / .28);
+    const hop = p < .18 ? Math.sin(Math.PI * p / .18) : 0;
+    const land = p >= .18 && p < .3 ? Math.sin(Math.PI * (p - .18) / .12) : 0;
+    return { rootY:-34 * hop, rootSy:1 - .06 * land + .03 * hop, rootSx:1 + .045 * land - .02 * hop,
+      bodySy:1 + .01 * b, bodySx:1 - .005 * b,
+      headRot:-11 * tilt + 1.2 * Math.sin(t * 3) * tilt, headDx:-6 * tilt, headDy:2 * land,
+      earL:8 * tilt - 6 * land, earR:-8 * tilt + 6 * land, blush:1 + .14 * tilt,
+      tail:4 * Math.sin(t * 1.6) + 16 * Math.sin(st * 8) * tilt, whisk:4 * Math.sin(t * 6) * tilt, hi:tilt };
   },
   sleepy(t) {
     const b = Math.sin(t * .9);
@@ -173,22 +180,46 @@ function frame(P, opts) {
   extras(P, opts);
 }
 
+// chunky white letters with a firm purple shadow
+function bubbleText(txt, x, y, size, alpha, pop = 1) {
+  if (alpha <= .01) return;
+  ctx.save();
+  ctx.globalAlpha = Math.min(1, alpha);
+  ctx.translate(x, y); ctx.scale(pop, pop);
+  ctx.font = `700 ${size}px Fredoka, "Nunito", system-ui, sans-serif`;
+  ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.lineJoin = "round";
+  const sh = size * .12, lw = size * .2;
+  ctx.fillStyle = OUTLINE; ctx.strokeStyle = OUTLINE; ctx.lineWidth = lw;
+  ctx.strokeText(txt, 0, sh); ctx.fillText(txt, 0, sh);        // firm drop shadow
+  ctx.strokeText(txt, 0, 0);                                     // purple rim
+  ctx.fillStyle = "#fff"; ctx.fillText(txt, 0, 0);               // white face
+  ctx.restore();
+}
+const popIn = (q) => q < .18 ? .4 + .8 * Math.sin(Math.PI / 2 * q / .18) * (1 + .15 * Math.sin(Math.PI * q / .18)) : 1;
 function extras(P, opts) {
   ctx.setTransform(view());
-  ctx.textAlign = "center"; ctx.fillStyle = OUTLINE;
   if (P.z > .05) {
     for (let i = 0; i < 3; i++) {
-      const q = ((now / 1000 * .35) + i / 3) % 1;
-      ctx.globalAlpha = P.z * Math.sin(Math.PI * q);
-      ctx.font = `700 ${60 + 50 * q}px system-ui, sans-serif`;
-      ctx.fillText("z", 900 + 140 * q + 25 * Math.sin(q * 6), 230 - 330 * q);
+      const q = ((now / 1000 * .32) + i / 3) % 1;
+      const size = 70 + 55 * q;
+      bubbleText("z", 930 + 150 * q + 30 * Math.sin(q * 6), 220 - 320 * q, size, P.z * Math.min(1, Math.sin(Math.PI * q) * 1.6), popIn(q) * (1 + .05 * Math.sin(now / 300 + i)));
     }
   }
   if (P.nom > .05) {
-    const q = (now / 1000 * .9) % 1;
-    ctx.globalAlpha = P.nom * Math.sin(Math.PI * q);
-    ctx.font = "800 70px system-ui, sans-serif";
-    ctx.fillText("nom", 960 + 30 * q, 300 - 120 * q);
+    const T = 1.8, q = ((now / 1000) % T) / T;
+    const spots = [[930, 250, -8], [1060, 140, 6], [960, 30, -4]];
+    spots.forEach(([x, y, r], i) => {
+      const s0 = i * .14, local = (q - s0) / (1 - s0);
+      if (local < 0) return;
+      const fade = local > .78 ? 1 - (local - .78) / .22 : 1;
+      ctx.save(); ctx.translate(x, y - 20 * local); ctx.rotate(r * D);
+      bubbleText("nom", 0, 0, 78, P.nom * fade, popIn(local * 1.4));
+      ctx.restore();
+    });
+    ctx.setTransform(view());
+  }
+  if (P.hi > .05) {
+    bubbleText("hi!", 1000, 170, 96, P.hi, .6 + .4 * P.hi + .03 * Math.sin(now / 160));
   }
   ctx.globalAlpha = 1;
   if (opts.pivots) {
@@ -235,6 +266,7 @@ Promise.all(ORDER.map(load)).then((list) => {
     sils[n] = s;
   }
   size(); requestAnimationFrame(tick);
+  document.fonts?.load?.('700 80px Fredoka');
 });
 </script>
 </body>

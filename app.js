@@ -148,6 +148,7 @@ function render() {
   if (state.view === "calendar") return renderCalendar();
   if (state.view === "barcode") return renderBarcode();
   if (state.view === "body") return renderBody();
+  if (state.view === "cycle") return renderCycle();
   if (state.view === "meal") return renderMeal();
   return renderDay();
 }
@@ -229,6 +230,7 @@ function renderDay() {
     </nav>
     ${summaryHTML(t, bubble, dayBurn(state.meals))}
     ${bodyCardHTML()}
+    ${cycleCardHTML()}
     ${weekHTML()}
     ${slotsHTML}
     ${waterHTML()}
@@ -637,6 +639,8 @@ function sugText() {
 function macroCheck() {
   const t = state.goalForm.targets;
   const fromMacros = Math.round((Number(t.protein) || 0) * 4 + (Number(t.carbs) || 0) * 4 + (Number(t.fat) || 0) * 9);
+  const min = safeMinimum(state.goalForm.profile);
+  if (Number(t.calories) && Number(t.calories) < min) return `Munchkin keeps your goal at ${min} kcal or more. Eating less than that every day isn't healthy.`;
   if (!fromMacros || !Number(t.calories)) return "";
   const diff = fromMacros - Number(t.calories);
   return Math.abs(diff) > 60 ? `Heads-up: your protein, carbs and fat add up to ${fromMacros} kcal, not ${t.calories}.` : "";
@@ -879,7 +883,7 @@ async function loadBody() {
     };
     state.cycle = cycleInfo(state.body.periodDays, state.body.manualStarts);
   } catch { /* keep what we had */ }
-  if (["day", "body", "calendar"].includes(state.view)) render();
+  if (["day", "body", "cycle", "calendar"].includes(state.view)) render();
 }
 function todayPhase() {
   if (!cycleOn() || !state.cycle?.starts?.length) return null;
@@ -889,16 +893,25 @@ function bodyCardHTML() {
   const w = state.body?.weights || [];
   const last = w[w.length - 1];
   const ch = weeklyChange(w);
-  const ph = todayPhase();
-  if (!last && !cycleOn()) {
+  if (!last) {
     return `<button class="body-card" data-action="body"><span>⚖️</span><span class="bc-main"><strong>Weigh in</strong><small>Track your weight trend</small></span><span class="bc-go">›</span></button>`;
   }
   return `<button class="body-card" data-action="body">
     <span>⚖️</span>
     <span class="bc-main">
       <strong>${last ? `${last.kg.toFixed(1)} kg` : "Weigh in"}${last && last.trend !== last.kg ? ` <small>· trend ${last.trend.toFixed(1)}</small>` : ""}</strong>
-      <small>${ch != null ? `${ch > 0 ? "+" : ch < 0 ? "−" : ""}${Math.abs(ch).toFixed(1)} kg this week` : last ? `Last weigh-in ${prettyDate(last.date).toLowerCase()}` : "Track your weight trend"}${ph ? ` · ${PHASE[ph.phase].emoji} ${PHASE[ph.phase].name}` : ""}</small>
+      <small>${ch != null ? `${ch > 0 ? "+" : ch < 0 ? "−" : ""}${Math.abs(ch).toFixed(1)} kg this week` : last ? `Last weigh-in ${prettyDate(last.date).toLowerCase()}` : "Track your weight trend"}</small>
     </span><span class="bc-go">›</span></button>`;
+}
+function cycleCardHTML() {
+  if (!cycleOn()) return "";
+  const ph = todayPhase();
+  const line = !ph ? "Tap to start tracking your cycle"
+    : ph.phase === "late" ? "Period later than expected"
+    : ph.phase === "period" ? `Day ${ph.day} of your period`
+    : `Day ${ph.day} · period in about ${ph.daysToNext} day${ph.daysToNext === 1 ? "" : "s"}`;
+  return `<button class="body-card cycle" data-action="cycle"><span>${ph ? PHASE[ph.phase].emoji : "🌙"}</span>
+    <span class="bc-main"><strong>${ph ? PHASE[ph.phase].name : "Cycle"}</strong><small>${line}</small></span><span class="bc-go">›</span></button>`;
 }
 function weightChartSVG(points, marks, from, to) {
   const W = 340, H = 170, pl = 34, pr = 10, pt = 10, pb = 22;
@@ -926,7 +939,6 @@ function renderBody() {
   const from = shiftDate(today, -44);
   const pts = w.filter((p) => p.date >= from);
   const marks = cycleOn() && state.cycle ? periodMarks(state.cycle, from, today) : {};
-  const ph = todayPhase();
   const prof = state.goals?.profile;
   const goalW = Number(prof?.weight);
   const suggestUpdate = last && goalW && Math.abs(last.trend - goalW) >= 1;
@@ -935,7 +947,7 @@ function renderBody() {
   <main class="screen">
     <header class="topbar">
       <button class="icon-btn" data-action="back" aria-label="Back">${ICON.back}</button>
-      <h1>${cycleOn() ? "Weight & cycle" : "Weight"}</h1>
+      <h1>Weight</h1>
     </header>
     <section class="card">
       <h2>Weigh in</h2>
@@ -951,35 +963,59 @@ function renderBody() {
       <h2>Your trend</h2>
       ${last ? `<div class="wstats"><div><strong>${last.trend.toFixed(1)} kg</strong><small>trend</small></div><div><strong>${ch == null ? "—" : `${ch > 0 ? "+" : ch < 0 ? "−" : ""}${Math.abs(ch).toFixed(1)} kg`}</strong><small>per week</small></div><div><strong>${last.kg.toFixed(1)} kg</strong><small>last weigh-in</small></div></div>
       ${weightChartSVG(pts, marks, from, today)}
-      <p class="help">Dots are your weigh-ins; the line is your trend, which ignores day-to-day water jumps.${cycleOn() ? " Pink bands are period days (lighter = predicted)." : ""}</p>
-      ${suggestUpdate ? `<div class="btn-row"><button class="btn ghost" data-action="weight-goals">Update my goals to ${last.trend.toFixed(1)} kg</button></div>` : ""}
+      <p class="help">Dots are your weigh-ins; the line is your trend, which ignores day-to-day water jumps.${cycleOn() ? ` Pink bands are period days (lighter = predicted). <button class="link-btn inline" data-action="cycle">See your cycle ›</button>` : ""}</p>
+      ${suggestUpdate ? `<div class="notice soft"><p>Your daily calories and protein are still worked out for <strong>${goalW} kg</strong>. Your weigh-ins now say about <strong>${last.trend.toFixed(1)} kg</strong>.</p><p class="help">Updating gives you slightly ${last.trend < goalW ? "lower" : "higher"} targets (never under ${safeMinimum(prof)} kcal). Numbers you typed yourself stay. Tip: wait for a week of weigh-ins so water jumps don't fool it.</p><div class="btn-row"><button class="btn ghost small" data-action="weight-goals">Update my goals to ${last.trend.toFixed(1)} kg</button></div></div>` : ""}
       <ul class="wlist">${[...w].reverse().slice(0, 8).map((e) => `<li><span>${prettyDate(e.date)}${e.source ? ` <em>${esc(e.source)}</em>` : ""}</span><span>${e.kg.toFixed(1)} kg <button class="link-btn" data-action="del-weight" data-date="${e.date}" aria-label="Delete">✕</button></span></li>`).join("")}</ul>`
       : `<p>No weigh-ins yet. Add your first one above.</p>`}
     </section>
-    ${cycleOn() ? `<section class="card">
-      <h2>Cycle</h2>
+  </main>`;
+}
+function renderCycle() {
+  const today = iso(new Date());
+  const ph = todayPhase();
+  const c = state.cycle;
+  $app.innerHTML = `
+  <main class="screen">
+    <header class="topbar">
+      <button class="icon-btn" data-action="back" aria-label="Back">${ICON.back}</button>
+      <h1>Cycle</h1>
+    </header>
+    <section class="card">
       ${ph ? `<p class="phase"><span>${PHASE[ph.phase].emoji}</span><span><strong>${PHASE[ph.phase].name}</strong><small>${PHASE[ph.phase].text(ph)}</small></span></p>
-        <p class="help">Next period expected around <strong>${new Date(ph.next).toLocaleDateString(undefined, { day: "numeric", month: "long" })}</strong> · cycle about ${state.cycle.cycleLen} days${state.cycle.learned ? " (learned)" : " (default until Munchkin has 2 periods)"}.</p>`
-      : `<p>Munchkin doesn't know your cycle yet. Tap below when your period starts${isNative() ? ", or connect your period tracker" : ""}.</p>`}
-      <div class="btn-row">
-        <button class="btn" data-action="period-start">🩸 My period started today</button>
-        ${isNative() ? `<button class="btn ghost" data-action="cycle-connect">Connect my period tracker</button>` : ""}
-      </div>
+        <p class="help">Next period expected around <strong>${new Date(ph.next).toLocaleDateString(undefined, { day: "numeric", month: "long" })}</strong> · cycle about ${c.cycleLen} days${c.learned ? " (learned from your periods)" : " (a typical guess until Munchkin has seen 2 periods)"}.</p>`
+      : `<p>Munchkin doesn't know your cycle yet. Tap below when your period starts${isNative() ? ", or connect your period tracker further down" : ""}.</p>`}
+      <div class="btn-row"><button class="btn" data-action="period-start">🩸 My period started today</button></div>
       <details class="ex-other"><summary>Started on another day?</summary>
         <div class="field-row two"><div class="field"><input id="p-date" type="date" max="${today}" value="${today}"></div><div class="btn-row"><button class="btn small" data-action="period-start-on">Save</button></div></div>
       </details>
+    </section>
+    <section class="card">
+      <h2>Period tracker app</h2>
       ${cycleStatusHTML()}
-      <p class="help">Reads from any tracker app that shares with Health Connect. Your cycle stays private in your own diary.</p>
-    </section>` : ""}
+      <p class="help">Munchkin reads from any tracker app that shares with Health Connect (like Flo). Your cycle stays private in your own diary.</p>
+    </section>
+    <section class="card">
+      <h2>Why your weight moves</h2>
+      <p class="help">Your body holds more water in the days before your period, often 0.5–2 kg. That's not fat, and it usually goes a few days after your period starts. Your weight chart shows period days as pink bands so you can spot this.</p>
+      <div class="btn-row"><button class="btn ghost small" data-action="body">See your weight ›</button></div>
+    </section>
   </main>`;
 }
 function cycleStatusHTML() {
-  const st = state.cycleStatus;
-  if (!st) return "";
-  if (st === "old-app") return `<div class="notice"><strong>Update the Android app first</strong><p>Your Munchkin app is an older version that can't read period trackers yet.</p><div class="btn-row"><a class="btn small" href="https://github.com/dstephanova/munchkin/releases/latest/download/munchkin.apk">Download the new version</a></div></div>`;
-  if (st === "no-permission") return `<div class="notice"><strong>Munchkin isn't allowed to read your cycle yet</strong><p>Open Health Connect → App permissions → Munchkin, and turn on <strong>Menstruation</strong>. Also check your tracker app is allowed to share it.</p><div class="btn-row"><button class="btn small" data-action="hc-settings">Open Health Connect</button><button class="btn ghost small" data-action="cycle-connect">Try again</button></div></div>`;
-  if (st === "no-hc") return `<div class="notice"><strong>Health Connect isn't on this phone</strong><p>Install it from the Play Store, then try again. Until then, use the button above.</p><div class="btn-row"><button class="btn small" data-action="health-store">Get Health Connect</button></div></div>`;
-  return `<p class="help">${esc(st)}</p>`;
+  if (!isNative()) return `<p>Connecting your tracker works in the Munchkin Android app. Here you can still tap when your period starts.</p>`;
+  const st = state.cycleConn || { kind: "checking" };
+  const hcBtn = `<button class="btn small" data-action="hc-settings">Open Health Connect</button>`;
+  const fmt = (d) => new Date(d).toLocaleDateString(undefined, { day: "numeric", month: "long" });
+  if (st.kind === "checking") return `<p class="conn">⏳ Checking the connection…</p>`;
+  if (st.kind === "asking") return `<p class="conn">⏳ Asking for permission…</p>`;
+  if (st.kind === "old-app") return `<div class="notice"><strong>Update the Android app first</strong><p>Your Munchkin app is an older version that can't read period trackers yet.</p><div class="btn-row"><a class="btn small" href="https://github.com/dstephanova/munchkin/releases/latest/download/munchkin.apk">Download the new version</a></div></div>`;
+  if (st.kind === "no-hc") return `<div class="notice"><strong>Health Connect isn't on this phone</strong><p>Install it from the Play Store, then try again. Until then, use the button above.</p><div class="btn-row"><button class="btn small" data-action="health-store">Get Health Connect</button></div></div>`;
+  if (st.kind === "not-connected") return `<p class="conn off">○ Not connected yet</p><div class="btn-row"><button class="btn" data-action="cycle-connect">Connect my period tracker</button></div>`;
+  if (st.kind === "no-permission") return `<p class="conn off">✕ Not connected</p><div class="notice"><strong>Munchkin isn't allowed to read your cycle yet</strong><p>Open Health Connect → App permissions → Munchkin, and turn on <strong>Menstruation</strong>.</p><div class="btn-row">${hcBtn}<button class="btn ghost small" data-action="cycle-connect">Try again</button></div></div>`;
+  if (st.kind === "error") return `<p class="conn off">✕ Something went wrong</p><p class="help">${esc(st.msg)}</p><div class="btn-row"><button class="btn ghost small" data-action="cycle-connect">Try again</button></div>`;
+  // connected
+  if (!st.total) return `<p class="conn on">✓ Connected to Health Connect</p><div class="notice"><strong>But there are no period days in Health Connect yet</strong><p>Your tracker app has to share them first. In Health Connect, tap <strong>App permissions → Flo</strong> (or your tracker) and turn on <strong>Menstruation</strong>. If your tracker isn't listed there, look in its own settings for “Health Connect”.</p><div class="btn-row">${hcBtn}<button class="btn ghost small" data-action="cycle-connect">Check again</button></div></div>`;
+  return `<p class="conn on">✓ Connected to Health Connect</p><p class="help">Found <strong>${st.total} period day${st.total === 1 ? "" : "s"}</strong>${st.latest ? `, the latest on ${fmt(st.latest)}` : ""}.${st.fresh ? ` ${st.fresh} new since last time.` : ""} Munchkin checks again every time you open the app.</p><div class="btn-row"><button class="btn ghost small" data-action="cycle-connect">Check again</button></div>`;
 }
 async function saveWeight(kg, date, source = "", hour = null) {
   await store.save({ id: `weight-${date}`, type: "weight", date, kg: Math.round(kg * 10) / 10, hour, source, createdAt: Date.now(), updatedAt: Date.now() });
@@ -987,27 +1023,26 @@ async function saveWeight(kg, date, source = "", hour = null) {
 async function syncCycle(ask = false) {
   const C = isNative() && window.Capacitor.Plugins?.Cycle;
   if (!cycleOn() || !store || !state.user) return;
-  if (!C) {
-    if (ask) { state.cycleStatus = "old-app"; if (state.view === "body") render(); }
-    return;
-  }
+  const show = (conn) => { state.cycleConn = conn; if (state.view === "cycle") render(); };
+  if (!C) { if (isNative()) show({ kind: "old-app" }); return; }
   try {
     let st = await C.status();
-    if (!st.available) { state.cycleStatus = "no-hc"; if (state.view === "body") render(); return; }
+    if (!st.available) return show({ kind: "no-hc" });
     if (!st.granted && ask) {
-      state.cycleStatus = "Asking for permission…"; if (state.view === "body") render();
+      show({ kind: "asking" });
       st = { granted: (await C.requestAccess()).granted };
     }
-    if (!st.granted) { if (ask) state.cycleStatus = "no-permission"; if (state.view === "body") render(); return; }
+    if (!st.granted) return show({ kind: ask ? "no-permission" : "not-connected" });
     const end = new Date(), start = new Date(end.getTime() - 400 * 86400000);
     const r = await C.readPeriods({ startDate: start.toISOString(), endDate: end.toISOString() });
+    const days = (r.days || []).slice().sort();
     const have = new Set(state.body?.periodDays || []);
-    const fresh = (r.days || []).filter((d) => !have.has(d));
+    const fresh = days.filter((d) => !have.has(d));
     for (const d of fresh) await store.save({ id: `period-${d}`, type: "period", date: d, source: "Health Connect", createdAt: Date.now(), updatedAt: Date.now() });
-    state.cycleStatus = `Synced from your period tracker${fresh.length ? ` (${fresh.length} new day${fresh.length > 1 ? "s" : ""})` : ""}.`;
+    state.cycleConn = { kind: "connected", total: days.length, latest: days[days.length - 1] || null, fresh: fresh.length };
     if (fresh.length) await loadBody();
-  } catch (e) { state.cycleStatus = "Couldn't read your period data: " + String(e?.message || e).slice(0, 100); }
-  if (state.view === "body") render();
+  } catch (e) { state.cycleConn = { kind: "error", msg: "Couldn't read your period data: " + String(e?.message || e).slice(0, 100) }; }
+  if (state.view === "cycle") render();
 }
 
 // ---------- calendar ----------
@@ -1116,7 +1151,7 @@ function back() {
   else go("day");
 }
 window.addEventListener("popstate", () => {
-  if (["meal", "settings", "goals", "calendar", "barcode", "body"].includes(state.view)) {
+  if (["meal", "settings", "goals", "calendar", "barcode", "body", "cycle"].includes(state.view)) {
     state.settingsStatus = null;
     go("day");
   }
@@ -1238,6 +1273,37 @@ async function applyAction(m, act) {
 
 // ---------- inside the Android app: the camera buttons use the real camera ----------
 const CAMERA_INPUTS = ["pick-camera", "pick-chat-camera", "pick-label", "pick-barcode"];
+const CAM_KEY = "munchkin.cam";
+let restoredPhoto = null;
+function clearCam() { state.camPending = false; try { localStorage.removeItem(CAM_KEY); } catch {} }
+async function feedPhoto(input, dataUrl) {
+  const blob = await (await fetch(dataUrl)).blob();
+  const file = new File([blob], "camera.jpg", { type: blob.type || "image/jpeg" });
+  const dt = new DataTransfer(); dt.items.add(file);
+  input.files = dt.files;
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+}
+// Munchkin was closed while the camera was open: Android hands the photo over when it starts again.
+if (isNative()) {
+  window.Capacitor.Plugins?.App?.addListener?.("appRestoredResult", (r) => {
+    if (r?.pluginId !== "Camera" || !r.success || !r.data?.dataUrl) { clearCam(); return; }
+    restoredPhoto = r.data.dataUrl;
+    deliverRestoredPhoto();
+  });
+}
+function deliverRestoredPhoto() {
+  if (!restoredPhoto || !state.user || !store) return;
+  let cam = null;
+  try { cam = JSON.parse(localStorage.getItem(CAM_KEY) || "null"); } catch {}
+  let id = cam?.id || "pick-camera";
+  if (id === "pick-chat-camera" && state.view !== "meal") id = "pick-camera";
+  if (cam?.slot != null) state.sheetSlot = cam.slot;
+  const url = restoredPhoto; restoredPhoto = null; clearCam();
+  const input = document.createElement("input");
+  input.type = "file"; input.id = id; input.hidden = true;
+  $app.appendChild(input);
+  feedPhoto(input, url).finally(() => input.remove());
+}
 document.addEventListener("click", async (ev) => {
   const Cam = isNative() && window.Capacitor.Plugins?.Camera;
   if (!Cam) return;
@@ -1245,15 +1311,17 @@ document.addEventListener("click", async (ev) => {
   const input = label?.querySelector("input[type=file]") || (ev.target.matches?.("input[type=file]") ? ev.target : null);
   if (!input || !CAMERA_INPUTS.includes(input.id)) return;
   ev.preventDefault(); ev.stopPropagation();
+  // The phone may close Munchkin while the camera is open (to save memory).
+  // Remember what the photo was for, so it still lands in the right place when Munchkin reopens.
+  try { localStorage.setItem(CAM_KEY, JSON.stringify({ id: input.id, slot: state.sheetSlot ?? null, at: Date.now() })); } catch {}
+  state.camPending = true; rememberOpen();
   try {
-    const photo = await Cam.getPhoto({ source: "CAMERA", resultType: "dataUrl", quality: 85, correctOrientation: true, saveToGallery: false });
+    const photo = await Cam.getPhoto({ source: "CAMERA", resultType: "dataUrl", quality: 85, width: 1800, correctOrientation: true, saveToGallery: false });
+    clearCam();
     if (!photo?.dataUrl) return;
-    const blob = await (await fetch(photo.dataUrl)).blob();
-    const file = new File([blob], "camera.jpg", { type: blob.type || "image/jpeg" });
-    const dt = new DataTransfer(); dt.items.add(file);
-    input.files = dt.files;
-    input.dispatchEvent(new Event("change", { bubbles: true }));
+    await feedPhoto(input, photo.dataUrl);
   } catch (e) {
+    clearCam();
     if (!/cancel/i.test(String(e?.message || e))) toast("Couldn't open the camera. Check that Munchkin may use it in your phone's settings.");
   }
 }, true);
@@ -1264,7 +1332,7 @@ const lastIsUser = (m) => m?.chat?.length && m.chat[m.chat.length - 1].role === 
 function rememberOpen() {
   try {
     const m = state.view === "meal" ? state.meal : null;
-    const keepMeal = m && (m._draft || m.askOnly || lastIsUser(m));
+    const keepMeal = m && (m._draft || m.askOnly || lastIsUser(m) || state.camPending);
     localStorage.setItem(OPEN_KEY, JSON.stringify({
       at: Date.now(),
       uid: state.user?.uid || null,
@@ -1374,6 +1442,8 @@ $app.addEventListener("click", async (ev) => {
     try { await store.signIn(); } catch (e) { state.loginError = e.message; render(); }
   } else if (a === "body") {
     go("body"); loadBody();
+  } else if (a === "cycle") {
+    go("cycle"); loadBody(); syncCycle();
   } else if (a === "save-weight") {
     const kg = Number(String(document.getElementById("w-kg")?.value || "").replace(",", "."));
     const date = document.getElementById("w-date")?.value || iso(new Date());
@@ -1514,7 +1584,8 @@ $app.addEventListener("click", async (ev) => {
   } else if (a === "save-goals") {
     const f = state.goalForm;
     const t = Object.fromEntries(TARGETS.map(([k]) => [k, Math.round(Number(f.targets[k]) || 0)]));
-    if (t.calories < 800) { toast("Please set calories of at least 800."); return; }
+    const minCal = safeMinimum(f.profile);
+    if (t.calories < minCal) { toast(`Please set at least ${minCal} kcal. Less than that every day isn't healthy.`); return; }
     const p = { ...f.profile };
     try {
       const sug = suggestGoals(p);
@@ -1773,6 +1844,7 @@ async function start() {
     syncHealth();
     loadBody().then(() => syncCycle());
     restoreOpen();
+    setTimeout(deliverRestoredPhoto, 50);
     unsubGoals = store.watchGoals((g) => { state.goals = g; state.cycle && null; if (state.view === "day" || state.view === "settings") render(); refreshWeek(); });
     render();
   });

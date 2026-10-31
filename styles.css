@@ -663,3 +663,9 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 .msg.user.draft .chat-photos { margin: 0; }
 .draft-text { white-space: pre-wrap; }
 .draft-label { margin: 0; }
+.link-btn.inline { margin: 0; font-size: inherit; }
+.notice.soft { margin-bottom: 4px; }
+.notice.soft p strong { color: var(--ink); }
+.conn { margin: 0 0 8px; font-weight: 800; color: var(--muted); }
+.conn.on { color: var(--fat); }
+.conn.off { color: var(--muted); }
