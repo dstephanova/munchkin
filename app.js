@@ -60,7 +60,7 @@ function stopAIStatus() {
 // ---------- little helpers ----------
 // The painted Munchkin picture (big for the home and login screens, small for icons).
 function catPic(size = "big", label = "Munchkin the cat") {
-  const src = size === "big" ? "img/munchkin-480.webp" : "img/munchkin-160.webp";
+  const src = size === "big" ? "img/munchkin-480.webp?v=2" : "img/munchkin-160.webp?v=2";
   return `<img class="cat-pic" src="${src}" alt="${label}" draggable="false">`;
 }
 function iso(d) {
