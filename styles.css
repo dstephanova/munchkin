@@ -685,3 +685,5 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 .drag-src { opacity: .35; }
 body.dragging { overflow: hidden; }
 .slot.drop-here { outline: 2px dashed var(--accent); outline-offset: 6px; border-radius: 18px; background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.goal-basis { font-weight: 600; color: var(--muted); }
+#steps-save[hidden] { display: none; }

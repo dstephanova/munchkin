@@ -4,7 +4,7 @@ import { weightTrend, weeklyChange, cycleInfo, phaseOn, periodMarks, PHASE, addD
 import { catSVG } from "./cat.js";
 import { ACTIVITY, PACES, paceOf, paceOptions, safeMinimum, suggestGoals, KCAL_PER_KG, EXERCISES, EFFORT, exerciseBurn, stepsBurn, learnUsualSteps } from "./goals.js";
 import { createStore } from "./store.js";
-import { askExercise, askAI, hasKey, loadAISettings, saveAISettings, testProvider, PROVIDERS } from "./ai.js";
+import { askExercise, askAI, askBarcode, hasKey, loadAISettings, saveAISettings, testProvider, PROVIDERS } from "./ai.js";
 
 const demo = new URLSearchParams(location.search).has("demo");
 const $app = document.getElementById("app");
@@ -299,15 +299,14 @@ function exerciseSectionHTML() {
         </button><button class="del-btn" data-action="home-ask-delete" data-id="${esc(e.id)}" aria-label="Delete ${esc(e.name)}">${ICON.trash}</button></div>`).join("")}
       <div class="steps-row">
         <label for="steps-input">👣 Steps</label>
-        <input id="steps-input" type="number" inputmode="numeric" placeholder="from Google Fit" value="${st ? esc(st.steps) : ""}">
-        ${st?.source ? `<span class="steps-note">Synced from ${st.source === "Google Fit" ? "Health Connect (where Google Fit shares them)" : esc(st.source)}${isNative() ? " automatically" : " by the Android app"}</span>` : ""}
-        ${lowStepsHint(st) ? `<span class="steps-note tip">Steps look low? Check that Google Fit is syncing to Health Connect: in Google Fit, Profile → ⚙️ → Sync Fit with Health Connect. <button class="link-btn" data-action="hc-settings">Open Health Connect</button></span>` : ""}
+        <input id="steps-input" type="number" inputmode="numeric" placeholder="${isNative() ? "syncing…" : "type your steps"}" value="${st ? esc(st.steps) : ""}" data-saved="${st ? esc(st.steps) : ""}">
+        <button class="btn small" data-action="save-steps" id="steps-save" hidden>Save</button>
+        ${sb || st?.source ? `<span class="steps-note">${[st?.source ? "Synced from Google Fit" : "", sb ? (sb.burned ? `🔥 ${sb.burned} kcal extra` : "within your usual day") : ""].filter(Boolean).join(" · ")}</span>` : ""}
+        ${lowStepsHint(st) ? `<span class="steps-note tip">Looks low? <button class="link-btn" data-action="hc-settings">Check Fit's sync</button></span>` : ""}
         ${state.health === "ask" ? `<button class="btn small" data-action="health-connect">Connect Google Fit</button>` : ""}
         ${state.health === "missing" ? `<span class="steps-note">Health Connect isn't on this phone. <button class="link-btn" data-action="health-store">Get it</button></span>` : ""}
         ${state.health === "error" ? `<span class="steps-note">Couldn't read steps: ${esc(state.healthError || "")}</span>` : ""}
-        <button class="btn small" data-action="save-steps">Save</button>
-        <span class="steps-note muted">Walks are already in your steps, so don't also add them as exercise.</span>
-        ${sb ? `<span class="steps-note">${sb.burned ? `🔥 ${sb.burned} kcal from steps over your usual ${sb.base.toLocaleString()}` : `Within your usual ${sb.base.toLocaleString()} steps, already counted`}${state.usualSteps ? " (learned from your last 2 weeks)" : ""}</span>` : ""}
+
       </div>
       <button class="add-slot" data-action="open-ex">+ Add exercise</button>
     </div>
@@ -348,7 +347,7 @@ function exSheetHTML() {
         <span>${x.custom ? esc(x.name || "Exercise") : esc(preset ? preset[1].split(" ").slice(1).join(" ") : "Pick an exercise")}</span>
         <strong>${burned != null ? `🔥 ${burned} kcal` : "—"}</strong>
       </div>
-      <p class="help">Calories burned on top of resting, estimated from your weight (${kg} kg${state.goals?.profile?.weight ? "" : ", set it in Goals for better numbers"}).</p>
+      <p class="help">Calories burned on top of resting, estimated from your weight (${kg} kg${state.goals?.profile?.weight ? "" : ", set it in Goals for better numbers"}). Walks are already in your steps, so don't add them here.</p>
       <div class="btn-row"><button class="btn" data-action="ex-save" ${burned == null ? "disabled" : ""}>${x.id ? "Save" : "Add"}</button><button class="btn ghost" data-action="close-ex">Cancel</button></div>
     </div>
   </div>`;
@@ -416,8 +415,7 @@ function sheetHTML() {
         <button class="big-action" data-action="type-meal">${ICON.pen}<span>Type it</span></button>
         <label class="big-action"><span class="ba-emoji">📋</span><span>Scan a label</span><input type="file" id="pick-label" accept="image/*" capture="environment"></label>
         <label class="big-action"><span class="ba-emoji">▥</span><span>Barcode</span><input type="file" id="pick-barcode" accept="image/*" capture="environment"></label>
-        <button class="big-action" data-action="ask"><span class="ba-emoji">💬</span><span>Just asking</span></button>
-        <button class="big-action" data-action="manual"><span class="ba-emoji">🔢</span><span>Enter numbers</span></button>
+        <button class="big-action" data-action="manual"><span class="ba-emoji">🔢</span><span>Manual</span></button>
       </div>
       <p class="help">Label: snap the nutrition table on the package. Barcode: snap the stripes, and Munchkin looks it up in a free food database.</p>
     </div>
@@ -496,7 +494,7 @@ function renderManual() {
   <main class="screen">
     <header class="topbar">
       <button class="icon-btn" data-action="back" aria-label="Back">${ICON.back}</button>
-      <h1>Enter numbers</h1>
+      <h1>Manual</h1>
     </header>
     <section class="card">
       <div class="field"><label for="mn-name">Name</label><input id="mn-name" type="text" maxlength="60" value="${esc(f.name || "")}" placeholder="e.g. Protein bar"></div>
@@ -791,17 +789,43 @@ function keepExInputs() {
 }
 
 // ---------- barcode ----------
+// Products you've added before are remembered by barcode, so they're found instantly next time.
+const productId = (code) => `product-${String(code).replace(/\D/g, "")}`;
+async function rememberProduct(p) {
+  if (!p?.code || !p.per100?.calories) return;
+  const { code, name, brand, image, packGrams, packText, servingGrams, servingText, per100, source } = p;
+  try { await store.save({ id: productId(code), type: "product", code, name, brand: brand || "", image: image || "", packGrams: packGrams || null, packText: packText || "", servingGrams: servingGrams || null, servingText: servingText || "", per100, source: source || "", updatedAt: Date.now() }); }
+  catch { /* only a shortcut for next time */ }
+}
 async function findBarcode(code) {
   const bc = state.bc;
   bc.code = code; bc.status = "looking"; render();
+  const found = (p) => { bc.status = "found"; bc.product = p; bc.grams = p.packGrams || 100; };
   try {
-    const p = demo && code === "1234567890123"
-      ? { code, name: "Example lasagna", brand: "Demo", image: "", packGrams: 400, packText: "400 g", servingGrams: null, servingText: "", per100: { calories: 145, protein: 7, carbs: 15, fat: 6 } }
-      : await lookupProduct(code);
+    // 1) your own saved products
+    let saved = null;
+    try { saved = await store.get(productId(code)); } catch {}
     if (state.bc !== bc) return;
-    if (!p) { bc.status = "notfound"; }
-    else if (p.missing) { bc.status = "nonutrition"; bc.product = p; }
-    else { bc.status = "found"; bc.product = p; bc.grams = p.packGrams || 100; }
+    if (saved?.per100?.calories) { found({ ...saved, source: "saved" }); if (state.view === "barcode") render(); return; }
+    // 2) Open Food Facts
+    let p = null, offError = null;
+    try {
+      p = demo && code === "1234567890123"
+        ? { code, name: "Example lasagna", brand: "Demo", image: "", packGrams: 400, packText: "400 g", servingGrams: null, servingText: "", per100: { calories: 145, protein: 7, carbs: 15, fat: 6 } }
+        : await lookupProduct(code);
+    } catch (e) { offError = e; }
+    if (state.bc !== bc) return;
+    if (p && !p.missing) { found({ ...p, source: "off" }); rememberProduct(p); }
+    else if (demo || hasKey()) {
+      // 3) ask the AI to find it online
+      bc.status = "asking"; bc.product = p; if (state.view === "barcode") render();
+      let ai = null;
+      try { ai = await askBarcode(code, { demo }); } catch { ai = null; }
+      if (state.bc !== bc) return;
+      if (ai) { found(ai); rememberProduct(ai); }
+      else bc.status = p?.missing ? "nonutrition" : "notfound";
+    } else if (offError) { bc.status = "error"; bc.error = offError.message; }
+    else bc.status = p?.missing ? "nonutrition" : "notfound";
   } catch (e) { bc.status = "error"; bc.error = e.message; }
   if (state.view === "barcode") render();
 }
@@ -811,10 +835,11 @@ function renderBarcode() {
   let body = "";
   if (bc.status === "reading") body = `<p>Reading the barcode…</p>`;
   else if (bc.status === "looking") body = `<p>Found code <strong>${esc(bc.code)}</strong>. Looking it up…</p>`;
+  else if (bc.status === "asking") body = `<p>It's not in the food database, so Munchkin is searching for <strong>${esc(bc.code)}</strong> online… 🔎</p>`;
   else if (["nocode", "notfound", "nonutrition", "error"].includes(bc.status)) {
     const msg = {
       nocode: "Munchkin couldn't read a barcode in that photo. Try again closer, with the stripes sharp and straight, or type the number under the stripes.",
-      notfound: `This product (${esc(bc.code || "")}) isn't in the food database yet. Snap the nutrition label instead, and Munchkin will read it.`,
+      notfound: `Munchkin couldn't find this product (${esc(bc.code || "")}) in the food database or online. Snap the nutrition label instead, and Munchkin will read it and remember it for next time.`,
       nonutrition: `Found “${esc(p?.name || bc.code)}”, but the database has no calories for it. Snap the nutrition label instead.`,
       error: esc(bc.error || "Something went wrong."),
     }[bc.status];
@@ -841,7 +866,7 @@ function renderBarcode() {
       <div class="ex-result"><span>${g} g</span><strong id="bc-kcal">${t.calories} kcal</strong></div>
       <div class="chips">${SLOTS.map(([id, label]) => `<button class="chip" data-action="bc-slot" data-slot="${id}" aria-pressed="${bc.slot === id}">${label}</button>`).join("")}</div>
       <div class="btn-row"><button class="btn" data-action="bc-add">Add to diary</button></div>
-      <p class="help">From Open Food Facts, a free food database filled in by people. If the numbers look off, compare with the label.</p>`;
+      <p class="help">${{ saved: "You've had this before, so Munchkin remembered it. 💜", ai: "Munchkin found this online, so double-check it against the label if you can.", off: "From Open Food Facts, a free food database filled in by people. If the numbers look off, compare with the label." }[p.source] || ""}</p>`;
   }
   $app.innerHTML = `
   <main class="screen">
@@ -1031,24 +1056,30 @@ function goalForecast() {
   if (Math.abs(need) < 0.3) return { target, done: true, short: `🎉 You're at your goal of ${target} kg`, text: `🎉 You're at your goal weight of ${target} kg. Amazing, queen!` };
   const recent = w.filter((e) => e.date >= shiftDate(iso(new Date()), -60));
   const span = recent.length >= 4 ? Math.round((new Date(recent[recent.length - 1].date) - new Date(recent[0].date)) / 86400000) : 0;
+  // what to trust: 1) your real weight trend, 2) this week's eating, 3) the pace picked in Goals
   let rate, source;
   if (span >= 14 && weeklyChange(w) != null) { rate = weeklyChange(w); source = "trend"; }
+  else if (state.week && state.week.days >= 2) { rate = Math.round(state.week.kgWeek * 100) / 100; source = "week"; }
   else { rate = (PACES.find((x) => x[0] === paceOf(prof || {})) || [, , 0])[2]; source = "plan"; }
   const goingRight = rate && Math.sign(rate) === Math.sign(need);
   if (!goingRight) {
     const why = source === "trend"
       ? (Math.abs(rate || 0) < 0.05 ? "Your weight has been steady lately, so there's no date yet." : "Your trend is going the other way right now, so there's no date yet. Water jumps happen; give it a week.")
+      : source === "week" ? "At what you ate this week, your weight would stay about the same or go the other way, so there's no date yet."
       : "Pick a pace that goes toward your goal in Goals to see a date.";
     return { target, short: `🎯 Goal ${target} kg`, text: why };
   }
   const days = Math.round((need / rate) * 7);
   if (days > 730) return { target, short: `🎯 ${target} kg: over 2 years at this pace`, text: `At ${Math.abs(rate).toFixed(2)} kg a week, ${target} kg is more than 2 years away.` };
   const date = shiftDate(iso(new Date()), days);
-  const pace = `${rate < 0 ? "−" : "+"}${Math.abs(rate).toFixed(1)} kg a week`;
-  return { target, date, rate, source, short: `🎯 ${target} kg around ${fmtD(date)}`,
+  const pace = `${rate < 0 ? "−" : "+"}${Math.abs(rate).toFixed(2)} kg a week`;
+  const basis = { trend: "your weigh-ins", week: "what you ate this week", plan: "your planned pace" }[source];
+  return { target, date, rate, source, short: `🎯 ${target} kg around ${fmtD(date)} <span class="goal-basis">· from ${basis}</span>`,
     text: source === "trend"
-      ? `At your current pace (${pace}), you'll reach ${target} kg around <strong>${fmtD(date)}</strong> 🎯`
-      : `If you keep to your planned pace (${pace}), you'll reach ${target} kg around <strong>${fmtD(date)}</strong> 🎯 After 2 weeks of weigh-ins, Munchkin uses your real trend instead.` };
+      ? `Based on your weigh-ins (${pace}), you'll reach ${target} kg around <strong>${fmtD(date)}</strong> 🎯`
+      : source === "week"
+      ? `Based on what you ate this week (${pace}), you'll reach ${target} kg around <strong>${fmtD(date)}</strong> 🎯 After 2 weeks of weigh-ins, Munchkin uses your real weight trend instead.`
+      : `If you keep to your planned pace (${pace}), you'll reach ${target} kg around <strong>${fmtD(date)}</strong> 🎯 Log a few days of food and it switches to what you actually eat.` };
 }
 function bodyCardHTML() {
   const w = state.body?.weights || [];
@@ -1599,6 +1630,7 @@ async function runAI() {
     state.sending = false;
     if (res.action) await applyAction(m, res.action);
     if (res.others?.length && !m.askOnly) await addOtherMeals(m, res.others, turns[turns.length - 1]);
+    if (m.barcode && res.label) rememberProduct({ code: m.barcode, name: res.label.product || res.name, per100: res.label.per100, packGrams: res.label.packGrams, packText: res.label.packGrams ? `${res.label.packGrams} g` : "", source: "label" });
     if (res.water) await addWater(res.water.ml, res.action?.day ? resolveDay(res.action.day) : (m.askOnly ? iso(new Date()) : m.date));
     m._retried = false;
     if (state.meal === m) { render(); scrollToEnd(); }
@@ -1949,8 +1981,10 @@ $app.addEventListener("change", async (ev) => {
     state.sheet = false;
     let photo;
     try { photo = await readPhoto(file, 1024); } catch { toast("Couldn't open that photo. Try another one."); render(); return; }
+    const fromCode = state.view === "barcode" && state.bc?.code ? state.bc.code : null;
     state.meal = newMeal(photo);
     state.meal.label = true;
+    if (fromCode) state.meal.barcode = fromCode;
     state.error = null; state.composer = ""; state.pendingPhotos = [];
     go("meal");
     sendMessage("This is a photo of a nutrition label. Read it: tell me the product, the values per 100 g and per pack or portion, then ask me how much I had.");
@@ -2028,12 +2062,18 @@ $app.addEventListener("input", (ev) => {
     const chk = document.getElementById("g-check"); if (chk) chk.textContent = macroCheck();
     return;
   }
+  if (ev.target.id === "steps-input") {
+    const btn = document.getElementById("steps-save");
+    if (btn) btn.hidden = ev.target.value.trim() === "" || ev.target.value === ev.target.dataset.saved;
+    return;
+  }
   if (ev.target.id === "composer") {
     state.composer = ev.target.value; autoGrow(ev.target);
     const dt = document.getElementById("draft-text"); if (dt) dt.textContent = ev.target.value;
   }
 });
 $app.addEventListener("keydown", (ev) => {
+  if (ev.target.id === "steps-input" && ev.key === "Enter") { const b = document.getElementById("steps-save"); if (b && !b.hidden) b.click(); return; }
   if (ev.target.id === "composer" && ev.key === "Enter" && !ev.shiftKey && window.matchMedia("(pointer: fine)").matches) {
     ev.preventDefault();
     ev.target.form.requestSubmit();

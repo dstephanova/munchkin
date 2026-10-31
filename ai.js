@@ -51,9 +51,10 @@ Using Munchkin's LAST answer (and earlier messages for context), list the FULL m
 - "water_ml": total millilitres of drinks in the person's LAST message that count toward water: every non-alcoholic drink (water, sparkling water, tea, coffee, juice, milk, soda, alcohol-free beer). Alcohol does NOT count. Assume 250 ml per glass or cup if no size is given. 0 if none, and 0 when they are only correcting an earlier message.
 - "water_only": true only if the LAST message is just plain water / sparkling water / unsweetened tea with no calories and no food.
 - If the person's LAST message lists food for MORE THAN ONE meal (e.g. "pizza for dinner and a mousse as a snack"): put in "items" only the food for THIS entry's meal (given below); if none of it is for this meal, use the first meal mentioned and set "action" to {"add": true, "slot": that meal, "day": null}. Put each OTHER meal in "others": [{"slot": "breakfast" | "lunch" | "dinner" | "snack", "day": "today" | "yesterday" | "YYYY-MM-DD" | null, "name": "short name", "items": [...]}]. Otherwise "others": [].
+- "label": ONLY if a photo in the chat is a nutrition label you can read: {"per100": {"calories": 0, "protein": 0, "carbs": 0, "fat": 0}, "pack_grams": null or the package weight in grams, "product": "product name from the package"}. Otherwise null.
 - "action": ONLY if the person's LAST message asks to add / log / save the food, or to move it to a meal or day, return {"add": true, "slot": "breakfast" | "lunch" | "dinner" | "snack" | null, "day": "today" | "yesterday" | "YYYY-MM-DD" | null}. Otherwise null.
 Reply with ONLY this JSON:
-{"name": "", "estimate": false, "action": null, "others": [], "water_ml": 0, "water_only": false, "questions": [{"question": "Which pack?", "options": ["500 g pack", "1 kg pack"]}], "items": [{"name": "food item", "amount": "e.g. 300 g", "calories": 0, "protein": 0, "carbs": 0, "fat": 0}]}`;
+{"name": "", "estimate": false, "action": null, "others": [], "label": null, "water_ml": 0, "water_only": false, "questions": [{"question": "Which pack?", "options": ["500 g pack", "1 kg pack"]}], "items": [{"name": "food item", "amount": "e.g. 300 g", "calories": 0, "protein": 0, "carbs": 0, "fat": 0}]}`;
 
 function cleanJSON(text) {
   try { return JSON.parse(text); } catch {}
@@ -508,6 +509,13 @@ function readNumbers(parsed, reply) {
       day: typeof act.day === "string" ? act.day : null,
     };
   }
+  const lb = m.label;
+  const kcal100 = Number(lb?.per100?.calories);
+  numbers.label = lb && kcal100 > 0 && kcal100 < 1000 ? {
+    per100: { calories: Math.round(kcal100), protein: Number(lb.per100.protein) || 0, carbs: Number(lb.per100.carbs) || 0, fat: Number(lb.per100.fat) || 0 },
+    packGrams: Number(lb.pack_grams) > 0 ? Math.round(Number(lb.pack_grams)) : null,
+    product: String(lb.product || "").slice(0, 60),
+  } : null;
   const SL = ["breakfast", "lunch", "dinner", "snack"];
   numbers.others = (Array.isArray(m.others) ? m.others : [])
     .filter((o) => o && SL.includes(o.slot) && Array.isArray(o.items) && o.items.length)
@@ -527,6 +535,40 @@ function readNumbers(parsed, reply) {
 function withReport(e, report) {
   if (report.length) e.message = `${e.message}\n\nWhat happened:\n• ${report.join("\n• ")}`;
   return e;
+}
+
+// ---------- barcode the food database doesn't know: look it up online ----------
+const BARCODE_RULES = `You look up packaged food products by their barcode (EAN/UPC number), using Google Search.
+Search for the exact barcode number (also try it in quotes, and with the word "баркод" or "EAN"). Shop and producer pages often list it.
+If you find the product with this exact barcode, give: product name, brand, package size, and nutrition per 100 g or 100 ml (kcal, protein, carbs, fat) from the label as shown by a shop or the producer.
+If you can't find this exact barcode, or there's no nutrition info, say NOT FOUND. Never guess a different product.`;
+const BARCODE_JSON = `Turn this answer into JSON. found = false if it says NOT FOUND or gives no calories per 100 g / 100 ml.
+Reply with ONLY: {"found": false, "name": "", "brand": "", "pack_grams": null, "per100": {"calories": 0, "protein": 0, "carbs": 0, "fat": 0}}`;
+export async function askBarcode(code, { demo = false, onStatus = () => {} } = {}) {
+  if (demo) {
+    await new Promise((r) => setTimeout(r, 600));
+    return code === "3800018645630" ? { code, name: "Demo yogurt drink", brand: "Demo", image: "", packGrams: 330, packText: "330 g", servingGrams: null, servingText: "", per100: { calories: 62, protein: 3, carbs: 9, fat: 1.5 }, source: "ai" } : null;
+  }
+  const { engine, key, models } = await setup(onStatus);
+  let text = null;
+  for (const model of models.order.slice(0, 2)) {
+    try { text = (await engine.chat(key, model, { system: BARCODE_RULES, turns: [{ role: "user", text: `Barcode: ${code}` }], search: true, timeoutMs: 45000 })).text; break; }
+    catch (e) { if (e.kind === "key" || e.kind === "credit" || e.kind === "network") throw e; }
+  }
+  if (!text || /NOT FOUND/i.test(text) && !/kcal/i.test(text)) return null;
+  for (const model of [models.fast, models.order[0]].filter((m, i, a) => a.indexOf(m) === i)) {
+    try {
+      const j = cleanJSON(await engine.json(key, model, { system: BARCODE_JSON, text, timeoutMs: 20000 }));
+      if (!j) continue;
+      const kcal = Number(j.per100?.calories);
+      if (!j.found || !(kcal > 0 && kcal < 1000)) return null;
+      const pg = Number(j.pack_grams) > 0 ? Math.round(Number(j.pack_grams)) : null;
+      return { code, name: String(j.name || "Product").slice(0, 60), brand: String(j.brand || "").slice(0, 40), image: "",
+        packGrams: pg, packText: pg ? `${pg} g` : "", servingGrams: null, servingText: "",
+        per100: { calories: Math.round(kcal), protein: Number(j.per100.protein) || 0, carbs: Number(j.per100.carbs) || 0, fat: Number(j.per100.fat) || 0 }, source: "ai" };
+    } catch { /* try the next model */ }
+  }
+  return null;
 }
 
 // ---------- exercise estimate ----------
