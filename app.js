@@ -418,7 +418,15 @@ function renderMeal() {
   if (!m) { state.view = "day"; return render(); }
   const t = sumItems(m.items);
   const firstTime = m.chat.length === 0;
-  const placeholder = m.askOnly ? "Ask anything, e.g. calories in a croissant?" : firstTime ? "What did you eat? e.g. two slices of pizza" : "Fix anything, or add a photo";
+  const draftPhotos = [...(firstTime && m.photo && !m.photoFromChat ? [m.photo] : []), ...(state.pendingPhotos || [])];
+  const hasDraftPhoto = draftPhotos.length > 0 && !state.sending;
+  const placeholder = hasDraftPhoto ? "Add a note (optional), or just tap send ➜" : m.askOnly ? "Ask anything, e.g. calories in a croissant?" : firstTime ? "What did you eat? e.g. two slices of pizza" : "Fix anything, or add a photo";
+  const pendingStart = (firstTime && m.photo && !m.photoFromChat) ? 1 : 0;
+  const draftHTML = hasDraftPhoto ? `<div class="msg user draft">
+      <div class="chat-photos n${Math.min(draftPhotos.length, 3)}">${draftPhotos.map((ph, i) => `<span class="dph"><img class="chat-photo" src="${esc(ph)}" alt="Photo ready to send" data-action="view-photo" data-src="${esc(ph)}">${i >= pendingStart ? `<button class="dx" data-action="drop-photo" data-i="${i - pendingStart}" aria-label="Remove photo">✕</button>` : ""}</span>`).join("")}</div>
+      <span id="draft-text" class="draft-text">${esc(state.composer || "")}</span>
+      <span class="draft-label">Ready to send, tap ➜</span>
+    </div>` : "";
 
   const chatHTML = m.chat.map((c, i) => {
     if (c.role === "model") {
@@ -465,25 +473,25 @@ function renderMeal() {
       ${m.askOnly ? `<div class="btn-row"><button class="btn" data-action="ask-add">+ Add to today's ${SLOT_NAME[m.slot].toLowerCase()}</button></div>` : ""}
       <ul class="items">${m.items.map((it) => `<li><span>${esc(it.name)} <em>${esc(it.amount)}</em></span><span>${it.calories} kcal</span></li>`).join("")}</ul>
     </section>` : ""}
-    ${m.photo ? `<button class="meal-photo" data-action="view-photo" data-src="${esc(m.photo)}" aria-label="Open photo full screen"><img src="${esc(m.photo)}" alt="Your meal photo"></button>` : ""}
+    ${m.photo && !(firstTime && !m.photoFromChat) ? `<button class="meal-photo" data-action="view-photo" data-src="${esc(m.photo)}" aria-label="Open photo full screen"><img src="${esc(m.photo)}" alt="Your meal photo"></button>` : ""}
     <div class="chips slot-row" aria-label="Meal time">
       ${SLOTS.map(([id, label]) => `<button class="chip" data-action="meal-slot" data-slot="${id}" aria-pressed="${m.slot === id}">${label}</button>`).join("")}
     </div>
     <section class="chat" aria-label="Chat with Munchkin">
-      ${firstTime && !state.sending ? `<div class="model-row"><span class="mini-cat">${catSVG({ label: "", head: true })}</span><div class="msg model">${m.askOnly ? "Ask me anything about food! Like \"how many calories in a croissant?\" or \"which is lighter, a wrap or a salad?\". Nothing goes in your diary unless you tap Add." : m.photo ? "Tap send and I'll guess what's on your plate. You can add notes first, like \"I only ate half\"." : "Tell me what you ate and roughly how much!"}</div></div>` : ""}
+      ${firstTime && !state.sending ? `<div class="model-row"><span class="mini-cat">${catSVG({ label: "", head: true })}</span><div class="msg model">${m.askOnly ? "Ask me anything about food! Like \"how many calories in a croissant?\" or \"which is lighter, a wrap or a salad?\". Nothing goes in your diary unless you tap Add." : m.photo ? "Got your photo! Add details if you like, such as \"I only ate half\", or just send it as it is." : "Tell me what you ate and roughly how much!"}</div></div>` : ""}
       ${chatHTML}
+      ${draftHTML}
       ${state.sending ? `<div class="model-row"><span class="mini-cat">${catSVG({ label: "", head: true })}</span><div><div class="msg model thinking" aria-label="Munchkin is thinking"><i></i><i></i><i></i></div><div class="ai-status" id="ai-status"></div></div></div>` : ""}
       ${state.error ? `<div class="msg error">${esc(state.error.text)}
         <div class="btn-row" style="margin-top:8px">${state.error.retry ? `<button class="btn" data-action="retry">Try again</button>` : ""}${state.error.settings ? `<button class="btn ghost" data-action="settings">Open settings</button>` : ""}</div></div>` : ""}
     </section>
   </main>
   <div class="composer">
-    ${(state.pendingPhotos || []).length ? `<div class="pending-photo">${state.pendingPhotos.map((ph, i) => `<span class="pend"><img src="${esc(ph)}" alt="Photo to send" data-action="view-photo" data-src="${esc(ph)}"><button data-action="drop-photo" data-i="${i}" aria-label="Remove photo">✕</button></span>`).join("")}<span class="pend-note">${state.pendingPhotos.length} ready to send</span></div>` : ""}
     <form data-form="chat">
       <label class="photo-btn" aria-label="Take a photo">${ICON.camera}<input type="file" id="pick-chat-camera" accept="image/*" capture="environment"></label>
       <label class="photo-btn" aria-label="Add photos from your gallery">${ICON.image}<input type="file" id="pick-chat-photo" accept="image/*" multiple></label>
       <textarea id="composer" rows="1" placeholder="${esc(placeholder)}" aria-label="Message to Munchkin"></textarea>
-      <button class="send-btn" type="submit" aria-label="Send" ${state.sending ? "disabled" : ""}>${ICON.send}</button>
+      <button class="send-btn ${hasDraftPhoto ? "ready" : ""}" type="submit" aria-label="Send" ${state.sending ? "disabled" : ""}>${ICON.send}</button>
     </form>
   </div>`;
   const ta = document.getElementById("composer");
@@ -960,22 +968,37 @@ function renderBody() {
       <details class="ex-other"><summary>Started on another day?</summary>
         <div class="field-row two"><div class="field"><input id="p-date" type="date" max="${today}" value="${today}"></div><div class="btn-row"><button class="btn small" data-action="period-start-on">Save</button></div></div>
       </details>
-      ${state.cycleStatus ? `<p class="help">${esc(state.cycleStatus)}</p>` : ""}
+      ${cycleStatusHTML()}
       <p class="help">Reads from any tracker app that shares with Health Connect. Your cycle stays private in your own diary.</p>
     </section>` : ""}
   </main>`;
+}
+function cycleStatusHTML() {
+  const st = state.cycleStatus;
+  if (!st) return "";
+  if (st === "old-app") return `<div class="notice"><strong>Update the Android app first</strong><p>Your Munchkin app is an older version that can't read period trackers yet.</p><div class="btn-row"><a class="btn small" href="https://github.com/dstephanova/munchkin/releases/latest/download/munchkin.apk">Download the new version</a></div></div>`;
+  if (st === "no-permission") return `<div class="notice"><strong>Munchkin isn't allowed to read your cycle yet</strong><p>Open Health Connect → App permissions → Munchkin, and turn on <strong>Menstruation</strong>. Also check your tracker app is allowed to share it.</p><div class="btn-row"><button class="btn small" data-action="hc-settings">Open Health Connect</button><button class="btn ghost small" data-action="cycle-connect">Try again</button></div></div>`;
+  if (st === "no-hc") return `<div class="notice"><strong>Health Connect isn't on this phone</strong><p>Install it from the Play Store, then try again. Until then, use the button above.</p><div class="btn-row"><button class="btn small" data-action="health-store">Get Health Connect</button></div></div>`;
+  return `<p class="help">${esc(st)}</p>`;
 }
 async function saveWeight(kg, date, source = "", hour = null) {
   await store.save({ id: `weight-${date}`, type: "weight", date, kg: Math.round(kg * 10) / 10, hour, source, createdAt: Date.now(), updatedAt: Date.now() });
 }
 async function syncCycle(ask = false) {
   const C = isNative() && window.Capacitor.Plugins?.Cycle;
-  if (!C || !cycleOn() || !store || !state.user) return;
+  if (!cycleOn() || !store || !state.user) return;
+  if (!C) {
+    if (ask) { state.cycleStatus = "old-app"; if (state.view === "body") render(); }
+    return;
+  }
   try {
     let st = await C.status();
-    if (!st.available) { state.cycleStatus = "Health Connect isn't on this phone."; return; }
-    if (!st.granted && ask) st = { granted: (await C.requestAccess()).granted };
-    if (!st.granted) { if (ask) state.cycleStatus = "Munchkin wasn't allowed to read your period data."; return; }
+    if (!st.available) { state.cycleStatus = "no-hc"; if (state.view === "body") render(); return; }
+    if (!st.granted && ask) {
+      state.cycleStatus = "Asking for permission…"; if (state.view === "body") render();
+      st = { granted: (await C.requestAccess()).granted };
+    }
+    if (!st.granted) { if (ask) state.cycleStatus = "no-permission"; if (state.view === "body") render(); return; }
     const end = new Date(), start = new Date(end.getTime() - 400 * 86400000);
     const r = await C.readPeriods({ startDate: start.toISOString(), endDate: end.toISOString() });
     const have = new Set(state.body?.periodDays || []);
@@ -1177,7 +1200,7 @@ async function addChatPhoto(files) {
   }
   const ta = document.getElementById("composer");
   if (ta) state.composer = ta.value;
-  render();
+  render(); scrollToEnd();
   document.getElementById("composer")?.focus();
 }
 document.addEventListener("paste", (ev) => {
@@ -1373,6 +1396,8 @@ $app.addEventListener("click", async (ev) => {
     catch { toast("Couldn't save. Try again."); }
   } else if (a === "cycle-connect") {
     await syncCycle(true); render();
+  } else if (a === "hc-settings") {
+    try { await HealthAPI()?.openHealthConnectSettings(); } catch { toast("Couldn't open Health Connect. Find it in your phone's Settings."); }
   } else if (a === "health-connect") {
     await syncHealth(true);
   } else if (a === "health-store") {
@@ -1701,7 +1726,10 @@ $app.addEventListener("input", (ev) => {
     const chk = document.getElementById("g-check"); if (chk) chk.textContent = macroCheck();
     return;
   }
-  if (ev.target.id === "composer") { state.composer = ev.target.value; autoGrow(ev.target); }
+  if (ev.target.id === "composer") {
+    state.composer = ev.target.value; autoGrow(ev.target);
+    const dt = document.getElementById("draft-text"); if (dt) dt.textContent = ev.target.value;
+  }
 });
 $app.addEventListener("keydown", (ev) => {
   if (ev.target.id === "composer" && ev.key === "Enter" && !ev.shiftKey && window.matchMedia("(pointer: fine)").matches) {

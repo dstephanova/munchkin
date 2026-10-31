@@ -646,3 +646,20 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 .cal-cell .cw { font-size: .55rem; font-weight: 700; color: var(--accent-deep); }
 .pdot { position: absolute; top: 4px; right: 4px; width: 7px; height: 7px; border-radius: 50%; background: var(--protein); }
 .pdot.predicted { background: transparent; border: 1.5px solid var(--protein); }
+
+/* ---------- ready-to-send bubble ---------- */
+.msg.user.draft { opacity: .78; border: 2px dashed rgba(255, 255, 255, .55); }
+.msg.user.draft .dph { position: relative; display: block; }
+.msg.user.draft .dx { position: absolute; top: 4px; right: 4px; width: 24px; height: 24px; border-radius: 50%; border: 0; background: rgba(23, 16, 36, .75); color: #fff; font-size: .7rem; display: grid; place-items: center; }
+.draft-text:empty { display: none; }
+.draft-text { display: block; }
+.draft-label { display: block; font-size: .78rem; font-weight: 800; opacity: .9; margin-top: 4px; }
+.send-btn.ready { animation: sendglow 1.4s ease-in-out infinite; }
+@keyframes sendglow { 0%, 100% { box-shadow: 0 0 0 0 rgba(139, 92, 246, .55); } 50% { box-shadow: 0 0 0 9px rgba(139, 92, 246, 0); } }
+@media (prefers-reduced-motion: reduce) { .send-btn.ready { animation: none; box-shadow: 0 0 0 4px rgba(139, 92, 246, .35); } }
+.notice { border: 2px solid var(--line); border-radius: 16px; padding: 12px 14px; display: grid; gap: 6px; }
+.notice p { margin: 0; color: var(--muted); font-size: .9rem; }
+.msg.user.draft { white-space: normal; display: grid; gap: 6px; }
+.msg.user.draft .chat-photos { margin: 0; }
+.draft-text { white-space: pre-wrap; }
+.draft-label { margin: 0; }
