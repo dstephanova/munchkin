@@ -598,7 +598,7 @@ function renderGoals() {
       <h2>About you</h2>
       <p>Munchkin uses this to work out what your body needs each day.</p>
       <div class="chips">${choice("sex", "female", "Woman")}${choice("sex", "male", "Man")}</div>
-      ${p.sex === "female" ? `<label class="toggle"><input type="checkbox" id="g-cycle" ${p.trackCycle === false ? "" : "checked"}><span><strong>Track my cycle</strong><small>Shows your cycle phases and explains why you might feel heavier or lighter.</small></span></label>` : ""}
+      ${CYCLE_FEATURE && p.sex === "female" ? `<label class="toggle"><input type="checkbox" id="g-cycle" ${p.trackCycle === false ? "" : "checked"}><span><strong>Track my cycle</strong><small>Shows your cycle phases and explains why you might feel heavier or lighter.</small></span></label>` : ""}
       <div class="field-row">
         <div class="field"><label for="g-age">Age</label><input id="g-age" type="number" inputmode="numeric" data-pf="age" value="${esc(p.age)}" placeholder="e.g. 30"></div>
         <div class="field"><label for="g-height">Height (cm)</label><input id="g-height" type="number" inputmode="numeric" data-pf="height" value="${esc(p.height)}" placeholder="e.g. 165"></div>
@@ -875,7 +875,10 @@ async function syncKeysDown() {
 
 
 // ---------- weight & cycle ----------
-const cycleOn = () => state.goals?.profile?.sex === "female" && state.goals?.profile?.trackCycle !== false;
+// Cycle tracking is switched off for now: Flo doesn't share period days with Health Connect.
+// Set this to true to bring back the cycle card, Cycle page, pink bands and the "Track my cycle" switch.
+const CYCLE_FEATURE = false;
+const cycleOn = () => CYCLE_FEATURE && state.goals?.profile?.sex === "female" && state.goals?.profile?.trackCycle !== false;
 async function loadBody() {
   if (!store || !state.user) return;
   const today = iso(new Date());
