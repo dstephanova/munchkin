@@ -675,3 +675,13 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 .undo-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .undo-row p { margin: 0; color: var(--ink); font-weight: 700; }
 .phase small + small { display: block; margin-top: 6px; opacity: .85; }
+.goal-line { color: var(--accent-deep) !important; font-weight: 800 !important; }
+.goal-forecast { margin: 6px 0 0; font-weight: 700; color: var(--ink); }
+.wchart .proj { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-dasharray: 2 6; stroke-linecap: round; }
+.wchart .goal-flag { font-size: 11px; font-weight: 800; fill: var(--accent-deep); }
+/* drag and drop */
+.meal-card, .meal-card img { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+.drag-ghost { position: fixed; z-index: 100; pointer-events: none; opacity: .95; transform: scale(1.03) rotate(-1.5deg); box-shadow: 0 14px 34px rgba(40, 10, 90, .35); border-radius: 18px; }
+.drag-src { opacity: .35; }
+body.dragging { overflow: hidden; }
+.slot.drop-here { outline: 2px dashed var(--accent); outline-offset: 6px; border-radius: 18px; background: color-mix(in srgb, var(--accent) 8%, transparent); }

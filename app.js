@@ -147,6 +147,7 @@ function render() {
   if (state.view === "goals") return renderGoals();
   if (state.view === "calendar") return renderCalendar();
   if (state.view === "barcode") return renderBarcode();
+  if (state.view === "manual") return renderManual();
   if (state.view === "body") return renderBody();
   if (state.view === "cycle") return renderCycle();
   if (state.view === "meal") return renderMeal();
@@ -188,7 +189,7 @@ function renderDay() {
     const list = meals.filter((m) => (m.slot || "snack") === id).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
     const st = sumItems(list.flatMap((m) => m.items || []));
     return `
-    <section class="slot">
+    <section class="slot" data-slot="${id}">
       <div class="slot-head"><h2>${label}</h2>${list.length ? `<span class="sum">${st.calories} kcal</span>` : ""}</div>
       <div class="meal-list">
         ${list.map((m) => {
@@ -197,7 +198,7 @@ function renderDay() {
             return `<div class="meal-card confirm-row"><span class="info"><span class="name">Delete “${esc(m.name || "Meal")}”?</span><span class="mini">It's gone for good.</span></span>
               <span class="btn-row"><button class="btn danger small" data-action="home-delete" data-id="${esc(m.id)}">Delete</button><button class="btn ghost small" data-action="home-keep">Keep</button></span></div>`;
           }
-          return `<div class="meal-wrap"><button class="meal-card" data-action="open-meal" data-id="${esc(m.id)}">
+          return `<div class="meal-wrap" data-drag="${esc(m.id)}"><button class="meal-card" data-action="open-meal" data-id="${esc(m.id)}">
             ${m.photo ? `<img class="thumb" src="${esc(m.photo)}" alt="Open photo" data-action="view-thumb" data-id="${esc(m.id)}">` : `<span class="thumb">${catPic("small", "")}</span>`}
             <span class="info"><span class="name">${esc(m.name || "Meal")}</span>
               <span class="mini">P ${mt.protein}g · C ${mt.carbs}g · F ${mt.fat}g</span></span>
@@ -249,7 +250,7 @@ function bar(value, goal, cls = "") {
   return `<div class="bar ${cls} ${value > goal ? "over" : ""}"><i style="width:${pct}%"></i></div>`;
 }
 function summaryHTML(t, bubble, burn = { total: 0 }) {
-  const g0 = state.goals;
+  const g0 = goalsOn(state.date);
   const g = g0 ? { ...g0, calories: g0.calories + burn.total } : null;
   if (!g) {
     return `<section class="summary">
@@ -416,10 +417,103 @@ function sheetHTML() {
         <label class="big-action"><span class="ba-emoji">📋</span><span>Scan a label</span><input type="file" id="pick-label" accept="image/*" capture="environment"></label>
         <label class="big-action"><span class="ba-emoji">▥</span><span>Barcode</span><input type="file" id="pick-barcode" accept="image/*" capture="environment"></label>
         <button class="big-action" data-action="ask"><span class="ba-emoji">💬</span><span>Just asking</span></button>
+        <button class="big-action" data-action="manual"><span class="ba-emoji">🔢</span><span>Enter numbers</span></button>
       </div>
       <p class="help">Label: snap the nutrition table on the package. Barcode: snap the stripes, and Munchkin looks it up in a free food database.</p>
     </div>
   </div>`;
+}
+
+// ---------- drag a meal to another meal slot (press and hold on a phone) ----------
+const drag = { timer: null, id: null, el: null, ghost: null, startX: 0, startY: 0, dx: 0, dy: 0, active: false, over: null, justDropped: 0 };
+function dragStart(x, y, target) {
+  const wrap = target.closest?.("[data-drag]");
+  if (!wrap || state.view !== "day" || target.closest(".del-btn")) return false;
+  drag.id = wrap.dataset.drag; drag.el = wrap; drag.startX = x; drag.startY = y;
+  clearTimeout(drag.timer);
+  drag.timer = setTimeout(() => dragBegin(x, y), 380);
+  return true;
+}
+function dragBegin(x, y) {
+  if (!drag.el?.isConnected) drag.el = document.querySelector(`[data-drag="${CSS.escape(drag.id)}"]`); // the list may have been redrawn
+  if (!drag.el) { dragCancel(); return; }
+  const r = drag.el.getBoundingClientRect();
+  drag.dx = x - r.left; drag.dy = y - r.top;
+  const g = drag.el.cloneNode(true);
+  g.className = "meal-wrap drag-ghost"; g.style.width = r.width + "px";
+  g.style.left = r.left + "px"; g.style.top = r.top + "px";
+  document.body.appendChild(g);
+  drag.ghost = g; drag.active = true;
+  drag.el.classList.add("drag-src");
+  document.body.classList.add("dragging");
+  navigator.vibrate?.(15);
+}
+function dragMove(x, y) {
+  if (!drag.id) return;
+  if (!drag.active) { if (Math.hypot(x - drag.startX, y - drag.startY) > 10) dragCancel(); return; }
+  drag.ghost.style.left = x - drag.dx + "px"; drag.ghost.style.top = y - drag.dy + "px";
+  drag.ghost.hidden = true;
+  const slot = document.elementFromPoint(x, y)?.closest?.(".slot[data-slot]");
+  drag.ghost.hidden = false;
+  if (drag.over !== slot) { drag.over?.classList.remove("drop-here"); slot?.classList.add("drop-here"); drag.over = slot; }
+  // scroll the page when dragging near the top or bottom edge
+  const edge = 80;
+  if (y < edge) window.scrollBy(0, -12); else if (y > window.innerHeight - edge) window.scrollBy(0, 12);
+}
+async function dragEnd() {
+  if (!drag.active) { dragCancel(); return; }
+  const to = drag.over?.dataset.slot, id = drag.id;
+  drag.justDropped = Date.now();
+  dragCancel();
+  const m = state.meals.find((x) => x.id === id);
+  if (!m || !to || (m.slot || "snack") === to) return;
+  m.slot = to; render();
+  try { await store.save({ ...m, updatedAt: Date.now() }); toast(`Moved to ${SLOT_NAME[to].toLowerCase()} 🐱`); }
+  catch { toast("Couldn't move it. Try again."); }
+}
+function dragCancel() {
+  clearTimeout(drag.timer);
+  drag.ghost?.remove(); drag.el?.classList.remove("drag-src"); drag.over?.classList.remove("drop-here");
+  document.body.classList.remove("dragging");
+  Object.assign(drag, { timer: null, id: null, el: null, ghost: null, active: false, over: null });
+}
+$app.addEventListener("touchstart", (e) => { if (e.touches.length === 1) dragStart(e.touches[0].clientX, e.touches[0].clientY, e.target); }, { passive: true });
+document.addEventListener("touchmove", (e) => { if (!drag.id) return; if (drag.active) e.preventDefault(); dragMove(e.touches[0].clientX, e.touches[0].clientY); }, { passive: false });
+document.addEventListener("touchend", () => { if (drag.id) dragEnd(); });
+document.addEventListener("touchcancel", dragCancel);
+$app.addEventListener("mousedown", (e) => { if (e.button === 0 && dragStart(e.clientX, e.clientY, e.target)) e.preventDefault(); });
+document.addEventListener("mousemove", (e) => { if (drag.id) dragMove(e.clientX, e.clientY); });
+document.addEventListener("mouseup", () => { if (drag.id) dragEnd(); });
+document.addEventListener("contextmenu", (e) => { if (drag.id) e.preventDefault(); });
+// a drop shouldn't also open the meal
+document.addEventListener("click", (e) => { if (Date.now() - drag.justDropped < 400) { e.preventDefault(); e.stopPropagation(); } }, true);
+
+// ---------- typing the numbers yourself (no AI) ----------
+function renderManual() {
+  const f = state.manual || {};
+  const num = (id, label, unit) => `<div class="field"><label for="mn-${id}">${label} (${unit})</label><input id="mn-${id}" type="number" inputmode="decimal" min="0" value="${esc(f[id] ?? "")}" placeholder="0"></div>`;
+  $app.innerHTML = `
+  <main class="screen">
+    <header class="topbar">
+      <button class="icon-btn" data-action="back" aria-label="Back">${ICON.back}</button>
+      <h1>Enter numbers</h1>
+    </header>
+    <section class="card">
+      <div class="field"><label for="mn-name">Name</label><input id="mn-name" type="text" maxlength="60" value="${esc(f.name || "")}" placeholder="e.g. Protein bar"></div>
+      <div class="field-row two">${num("calories", "Calories", "kcal")}${num("protein", "Protein", "g")}</div>
+      <div class="field-row two">${num("carbs", "Carbs", "g")}${num("fat", "Fat", "g")}</div>
+      <div class="field"><label>Meal</label>
+        <div class="chips">${SLOTS.map(([id, label]) => `<button class="chip" data-action="manual-slot" data-slot="${id}" aria-pressed="${state.sheetSlot === id}">${label}</button>`).join("")}</div>
+      </div>
+      <p id="mn-check" class="help">Only calories are needed. Leave the rest empty if you don't know them.</p>
+      <div class="btn-row"><button class="btn" data-action="manual-save">Add to ${prettyDate(state.date).toLowerCase()}</button></div>
+    </section>
+  </main>`;
+}
+function readManual() {
+  const v = (id) => document.getElementById(`mn-${id}`)?.value ?? "";
+  state.manual = { name: v("name"), calories: v("calories"), protein: v("protein"), carbs: v("carbs"), fat: v("fat") };
+  return state.manual;
 }
 
 function renderMeal() {
@@ -575,6 +669,27 @@ function renderSettings() {
 
 const TARGETS = [["calories", "Calories", "kcal"], ["protein", "Protein", "g"], ["carbs", "Carbs", "g"], ["fat", "Fat", "g"]];
 
+// ---------- goals per day ----------
+// Every change to the targets is remembered from that day on, so past days keep the goals they had.
+const pickTargets = (g) => ({ calories: g.calories, protein: g.protein, carbs: g.carbs, fat: g.fat, maintenance: g.maintenance ?? null });
+async function saveGoalsKeepingHistory(next) {
+  const prev = state.goals;
+  const today = iso(new Date());
+  let history = Array.isArray(prev?.history) ? prev.history.slice()
+    : prev ? [{ from: "0000-00-00", ...pickTargets(prev) }] : []; // first time: older days keep the goals they had
+  history = history.filter((h) => h.from !== today);
+  history.push({ from: today, ...pickTargets(next) });
+  history.sort((a, b) => a.from.localeCompare(b.from));
+  await store.saveGoals({ ...next, history: history.slice(-60) });
+}
+function goalsOn(date) {
+  const g = state.goals;
+  if (!g) return null;
+  const h = Array.isArray(g.history) ? g.history : [];
+  const entry = [...h].reverse().find((x) => x.from <= date);
+  return entry ? { ...g, ...entry } : g;
+}
+
 function openGoals() {
   const g = state.goals;
   const profile = { sex: "female", age: "", height: "", weight: "", activity: "light", goal: "keep", ...(g?.profile || {}) };
@@ -604,6 +719,7 @@ function renderGoals() {
         <div class="field"><label for="g-height">Height (cm)</label><input id="g-height" type="number" inputmode="numeric" data-pf="height" value="${esc(p.height)}" placeholder="e.g. 165"></div>
         <div class="field"><label for="g-weight">Weight (kg)</label><input id="g-weight" type="number" inputmode="decimal" data-pf="weight" value="${esc(p.weight)}" placeholder="e.g. 60"></div>
       </div>
+      <div class="field"><label for="g-goalw">Goal weight (kg, optional)</label><input id="g-goalw" type="number" inputmode="decimal" step="0.1" data-pf="goalWeight" value="${esc(p.goalWeight || "")}" placeholder="e.g. 60"><p class="help">Munchkin shows when you might get there, based on your weigh-ins.</p></div>
       <div class="field"><label>How active are you?</label>
         <p class="help">“Exercise” means anything that makes you warm and a bit out of breath for at least 20 minutes: a brisk walk, gym, dancing, cycling, swimming. Normal moving around (housework, shopping, walking around the office) doesn't count, it's already included.</p>
         <div class="chips stack">${ACTIVITY.map(([id, label, sub]) => choice("activity", id, label, sub)).join("")}</div>
@@ -900,18 +1016,55 @@ function todayPhase() {
   if (!cycleOn() || !state.cycle?.starts?.length) return null;
   return phaseOn(iso(new Date()), state.cycle);
 }
+// When might you reach your goal weight? Uses your real trend once there are 2+ weeks of weigh-ins,
+// otherwise the pace you picked in Goals.
+function goalForecast() {
+  const prof = state.goals?.profile;
+  const target = Number(prof?.goalWeight);
+  if (!(target > 30)) return null;
+  const w = state.body?.weights || [];
+  const last = w[w.length - 1];
+  const current = last ? last.trend : Number(prof?.weight);
+  if (!(current > 30)) return null;
+  const need = target - current;
+  const fmtD = (d) => new Date(d).toLocaleDateString(undefined, { day: "numeric", month: "long", ...(new Date(d).getFullYear() !== new Date().getFullYear() ? { year: "numeric" } : {}) });
+  if (Math.abs(need) < 0.3) return { target, done: true, short: `🎉 You're at your goal of ${target} kg`, text: `🎉 You're at your goal weight of ${target} kg. Amazing, queen!` };
+  const recent = w.filter((e) => e.date >= shiftDate(iso(new Date()), -60));
+  const span = recent.length >= 4 ? Math.round((new Date(recent[recent.length - 1].date) - new Date(recent[0].date)) / 86400000) : 0;
+  let rate, source;
+  if (span >= 14 && weeklyChange(w) != null) { rate = weeklyChange(w); source = "trend"; }
+  else { rate = (PACES.find((x) => x[0] === paceOf(prof || {})) || [, , 0])[2]; source = "plan"; }
+  const goingRight = rate && Math.sign(rate) === Math.sign(need);
+  if (!goingRight) {
+    const why = source === "trend"
+      ? (Math.abs(rate || 0) < 0.05 ? "Your weight has been steady lately, so there's no date yet." : "Your trend is going the other way right now, so there's no date yet. Water jumps happen; give it a week.")
+      : "Pick a pace that goes toward your goal in Goals to see a date.";
+    return { target, short: `🎯 Goal ${target} kg`, text: why };
+  }
+  const days = Math.round((need / rate) * 7);
+  if (days > 730) return { target, short: `🎯 ${target} kg: over 2 years at this pace`, text: `At ${Math.abs(rate).toFixed(2)} kg a week, ${target} kg is more than 2 years away.` };
+  const date = shiftDate(iso(new Date()), days);
+  const pace = `${rate < 0 ? "−" : "+"}${Math.abs(rate).toFixed(1)} kg a week`;
+  return { target, date, rate, source, short: `🎯 ${target} kg around ${fmtD(date)}`,
+    text: source === "trend"
+      ? `At your current pace (${pace}), you'll reach ${target} kg around <strong>${fmtD(date)}</strong> 🎯`
+      : `If you keep to your planned pace (${pace}), you'll reach ${target} kg around <strong>${fmtD(date)}</strong> 🎯 After 2 weeks of weigh-ins, Munchkin uses your real trend instead.` };
+}
 function bodyCardHTML() {
   const w = state.body?.weights || [];
   const last = w[w.length - 1];
   const ch = weeklyChange(w);
+  const fc = goalForecast();
+  const goalLine = fc ? `<small class="goal-line">${fc.short}</small>` : "";
   if (!last) {
-    return `<button class="body-card" data-action="body"><span>⚖️</span><span class="bc-main"><strong>Weigh in</strong><small>Track your weight trend</small></span><span class="bc-go">›</span></button>`;
+    return `<button class="body-card" data-action="body"><span>⚖️</span><span class="bc-main"><strong>Weigh in</strong><small>Track your weight trend</small>${goalLine}</span><span class="bc-go">›</span></button>`;
   }
   return `<button class="body-card" data-action="body">
     <span>⚖️</span>
     <span class="bc-main">
-      <strong>${last ? `${last.kg.toFixed(1)} kg` : "Weigh in"}${last && last.trend !== last.kg ? ` <small>· trend ${last.trend.toFixed(1)}</small>` : ""}</strong>
-      <small>${ch != null ? `${ch > 0 ? "+" : ch < 0 ? "−" : ""}${Math.abs(ch).toFixed(1)} kg this week` : last ? `Last weigh-in ${prettyDate(last.date).toLowerCase()}` : "Track your weight trend"}</small>
+      <strong>${last.kg.toFixed(1)} kg${last.trend !== last.kg ? ` <small>· trend ${last.trend.toFixed(1)}</small>` : ""}</strong>
+      <small>${ch != null ? `${ch > 0 ? "+" : ch < 0 ? "−" : ""}${Math.abs(ch).toFixed(1)} kg this week` : `Last weigh-in ${prettyDate(last.date).toLowerCase()}`}</small>
+      ${goalLine}
     </span><span class="bc-go">›</span></button>`;
 }
 function cycleCardHTML() {
@@ -925,12 +1078,23 @@ function cycleCardHTML() {
   return `<button class="body-card cycle" data-action="cycle"><span>${PHASE[ph.phase].emoji}</span>
     <span class="bc-main"><strong>${PHASE[ph.phase].name} <small>· ${when}</small></strong><span class="cycle-note">${esc(dayNote(ph, state.cycle))}</span></span><span class="bc-go">›</span></button>`;
 }
-function weightChartSVG(points, marks, from, to) {
+function weightChartSVG(points, marks, from, to, proj = null) {
   const W = 340, H = 170, pl = 34, pr = 10, pt = 10, pb = 22;
+  // a dotted path toward the goal weight (shown up to 8 weeks ahead)
+  let pend = null;
+  if (proj && points.length) {
+    const last = points[points.length - 1];
+    const maxTo = shiftDate(to, 56);
+    const endDate = proj.date < maxTo ? proj.date : maxTo;
+    const total = (new Date(proj.date) - new Date(last.date)) / 86400000 || 1;
+    const part = (new Date(endDate) - new Date(last.date)) / 86400000;
+    pend = { from: last, date: endDate, kg: last.trend + (proj.target - last.trend) * Math.min(1, part / total), reached: endDate === proj.date, target: proj.target };
+    to = endDate;
+  }
   const span = Math.max(1, Math.round((new Date(to) - new Date(from)) / 86400000));
   const x = (d) => pl + ((new Date(d) - new Date(from)) / 86400000 / span) * (W - pl - pr);
   if (!points.length) return "";
-  const vals = points.flatMap((p) => [p.kg, p.trend]);
+  const vals = points.flatMap((p) => [p.kg, p.trend]).concat(pend ? [pend.kg] : []);
   let lo = Math.floor(Math.min(...vals) - 0.5), hi = Math.ceil(Math.max(...vals) + 0.5);
   if (hi - lo < 2) { hi += 1; lo -= 1; }
   const y = (v) => pt + (1 - (v - lo) / (hi - lo)) * (H - pt - pb);
@@ -939,8 +1103,9 @@ function weightChartSVG(points, marks, from, to) {
   const line = points.map((p, i) => `${i ? "L" : "M"}${x(p.date).toFixed(1)} ${y(p.trend).toFixed(1)}`).join(" ");
   const dots = points.map((p) => `<circle cx="${x(p.date).toFixed(1)}" cy="${y(p.kg).toFixed(1)}" r="3.5" class="dot"/>`).join("");
   const fmt = (d) => new Date(d).toLocaleDateString(undefined, { day: "numeric", month: "short" });
+  const projSVG = pend ? `<path d="M${x(pend.from.date).toFixed(1)} ${y(pend.from.trend).toFixed(1)} L${x(pend.date).toFixed(1)} ${y(pend.kg).toFixed(1)}" class="proj"/>${pend.reached ? `<text x="${(x(pend.date) - 4).toFixed(1)}" y="${(y(pend.kg) - 8).toFixed(1)}" text-anchor="end" class="goal-flag">🎯 ${pend.target}</text>` : ""}` : "";
   return `<svg class="wchart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Weight chart">
-    ${bands}${ticks}<path d="${line}" class="trend"/>${dots}
+    ${bands}${ticks}${projSVG}<path d="${line}" class="trend"/>${dots}
     <text x="${pl}" y="${H - 6}">${fmt(from)}</text><text x="${W - pr}" y="${H - 6}" text-anchor="end">${fmt(to)}</text></svg>`;
 }
 function renderBody() {
@@ -952,6 +1117,7 @@ function renderBody() {
   const pts = w.filter((p) => p.date >= from);
   const marks = cycleOn() && state.cycle ? periodMarks(state.cycle, from, today) : {};
   const prof = state.goals?.profile;
+  const fc = goalForecast();
   const goalW = Number(prof?.weight);
   const suggestUpdate = last && goalW && Math.abs(last.trend - goalW) >= 1;
   const showTip = last && last.date === today && last.hour != null && last.hour >= 11;
@@ -974,7 +1140,8 @@ function renderBody() {
     <section class="card">
       <h2>Your trend</h2>
       ${last ? `<div class="wstats"><div><strong>${last.trend.toFixed(1)} kg</strong><small>trend</small></div><div><strong>${ch == null ? "—" : `${ch > 0 ? "+" : ch < 0 ? "−" : ""}${Math.abs(ch).toFixed(1)} kg`}</strong><small>per week</small></div><div><strong>${last.kg.toFixed(1)} kg</strong><small>last weigh-in</small></div></div>
-      ${weightChartSVG(pts, marks, from, today)}
+      ${weightChartSVG(pts, marks, from, today, fc?.date ? fc : null)}
+      ${fc ? `<p class="goal-forecast">${fc.text}</p>` : `<p class="help">Set a goal weight in Goals to see when you might reach it.</p>`}
       <p class="help">Dots are your weigh-ins; the line is your trend, which ignores day-to-day water jumps.${cycleOn() ? ` Pink bands are period days (lighter = predicted). <button class="link-btn inline" data-action="cycle">See your cycle ›</button>` : ""}</p>
       ${suggestUpdate ? `<div class="notice soft"><p>Your daily calories and protein are still worked out for <strong>${goalW} kg</strong>. Your weigh-ins now say about <strong>${last.trend.toFixed(1)} kg</strong>.</p><p class="help">Updating gives you slightly ${last.trend < goalW ? "lower" : "higher"} targets (never under ${safeMinimum(prof)} kcal). Numbers you typed yourself stay. Tip: wait for a week of weigh-ins so water jumps don't fool it.</p><div class="btn-row"><button class="btn ghost small" data-action="weight-goals">Update my goals to ${last.trend.toFixed(1)} kg</button></div></div>` : ""}
       <ul class="wlist">${[...w].reverse().slice(0, 8).map((e) => `<li><span>${prettyDate(e.date)}${e.source ? ` <em>${esc(e.source)}</em>` : ""}</span><span>${e.kg.toFixed(1)} kg <button class="link-btn" data-action="del-weight" data-date="${e.date}" aria-label="Delete">✕</button></span></li>`).join("")}</ul>`
@@ -1114,7 +1281,6 @@ function renderCalendar() {
   const daysInMonth = new Date(c.year, c.month + 1, 0).getDate();
   const lead = (first.getDay() + 6) % 7; // Monday first
   const today = iso(new Date());
-  const goal = state.goals?.calories || 0;
   const title = first.toLocaleDateString(undefined, { month: "long", year: "numeric" });
   const weekdays = [...Array(7)].map((_, i) => new Date(2024, 0, 1 + i).toLocaleDateString(undefined, { weekday: "narrow" }));
   const isThisMonth = c.year === new Date().getFullYear() && c.month === new Date().getMonth();
@@ -1126,6 +1292,7 @@ function renderCalendar() {
     const info = c.days?.[key];
     const future = key > today && !(c.marks?.[key] === "predicted");
     if (info) { logged++; total += info.calories; }
+    const goal = goalsOn(key)?.calories || 0;
     const dayGoal = goal + (info?.burned || 0);
     const status = !info ? "" : goal ? (info.calories > dayGoal * 1.05 ? "over" : info.calories >= dayGoal * 0.85 ? "near" : "under") : "logged";
     cells += `<button class="cal-cell ${status} ${key === today ? "today" : ""} ${key === state.date ? "picked" : ""}" data-action="cal-day" data-date="${key}" ${future ? "disabled" : ""}>
@@ -1145,7 +1312,7 @@ function renderCalendar() {
       </div>
       <div class="cal-grid">${weekdays.map((w) => `<span class="cal-wd">${w}</span>`).join("")}${cells}</div>
       ${c.days === null ? `<p class="empty-note">Loading…</p>` : `<p>${logged ? `${logged} day${logged > 1 ? "s" : ""} logged · average ${Math.round(total / logged)} kcal a day` : "Nothing logged this month yet."}</p>`}
-      ${goal ? `<div class="cal-legend"><span><i class="near"></i>Around your goal</span><span><i class="under"></i>Under</span><span><i class="over"></i>Over</span></div>` : ""}
+      ${state.goals ? `<div class="cal-legend"><span><i class="near"></i>Around your goal</span><span><i class="under"></i>Under</span><span><i class="over"></i>Over</span></div>` : ""}
     </section>
   </main>`;
 }
@@ -1182,7 +1349,7 @@ function back() {
   else go("day");
 }
 window.addEventListener("popstate", () => {
-  if (["meal", "settings", "goals", "calendar", "barcode", "body", "cycle"].includes(state.view)) {
+  if (["meal", "settings", "goals", "calendar", "barcode", "body", "cycle", "manual"].includes(state.view)) {
     state.settingsStatus = null;
     go("day");
   }
@@ -1391,6 +1558,19 @@ function restoreOpen() {
   }
 }
 
+// One message about several meals ("pizza for dinner and a mousse as a snack"): each gets its own entry.
+async function addOtherMeals(m, others, lastTurn) {
+  const added = [];
+  for (const o of others) {
+    const date = o.day ? resolveDay(o.day) : m.date;
+    const meal = { id: store.newId(), date, slot: o.slot, name: o.name, items: o.items, photo: null,
+      chat: [{ role: "user", text: lastTurn?.text || "" }, { role: "model", text: `Split from your message about ${m.name}. Fix anything here.` }],
+      createdAt: Date.now(), updatedAt: Date.now() };
+    try { await saveMeal(meal); added.push(`${o.name} → ${SLOT_NAME[o.slot].toLowerCase()}`); } catch {}
+  }
+  if (added.length) toast(`Also added: ${added.join(", ")} 🐱`);
+}
+
 async function runAI() {
   const m = state.meal;
   state.leftWhileSending = false;
@@ -1405,7 +1585,7 @@ async function runAI() {
   render(); scrollToEnd(); setAIStatus("Thinking…");
   try {
     const turns = m.chat.slice(-24);
-    const res = await askAI(turns, m.chat.length <= 24 && !m.photoFromChat ? m.photo : null, { demo, onStatus: setAIStatus, meal: { name: m.name, items: m.items } });
+    const res = await askAI(turns, m.chat.length <= 24 && !m.photoFromChat ? m.photo : null, { demo, onStatus: setAIStatus, meal: { name: m.name, items: m.items, slot: m.slot, askOnly: !!m.askOnly } });
     stopAIStatus();
     m.chat.push({ role: "model", text: res.reply, sources: res.sources || [], questions: res.questions || [] });
     state.answers = {};
@@ -1418,6 +1598,7 @@ async function runAI() {
     if (res.water?.only && !prevItems.length && !res.items.length) m.waterOnly = true;
     state.sending = false;
     if (res.action) await applyAction(m, res.action);
+    if (res.others?.length && !m.askOnly) await addOtherMeals(m, res.others, turns[turns.length - 1]);
     if (res.water) await addWater(res.water.ml, res.action?.day ? resolveDay(res.action.day) : (m.askOnly ? iso(new Date()) : m.date));
     m._retried = false;
     if (state.meal === m) { render(); scrollToEnd(); }
@@ -1490,7 +1671,7 @@ $app.addEventListener("click", async (ev) => {
     const edited = new Set(g.edited || []);
     const next = { ...g, profile, maintenance: sug?.maintenance || g.maintenance, updatedAt: Date.now() };
     if (sug) for (const k of ["calories", "protein", "carbs", "fat"]) if (!edited.has(k)) next[k] = sug[k];
-    try { await store.saveGoals(next); toast(`Goals updated for ${last.trend.toFixed(1)} kg`); } catch { toast("Couldn't save. Try again."); }
+    try { await saveGoalsKeepingHistory(next); toast(`Goals updated for ${last.trend.toFixed(1)} kg`); } catch { toast("Couldn't save. Try again."); }
   } else if (a === "period-start" || a === "period-start-on") {
     const d = a === "period-start" ? iso(new Date()) : (document.getElementById("p-date")?.value || iso(new Date()));
     try { await store.save({ id: `period-${d}`, type: "period", date: d, start: true, source: "", createdAt: Date.now(), updatedAt: Date.now() }); state.periodJustSaved = d; await loadBody(); }
@@ -1623,7 +1804,7 @@ $app.addEventListener("click", async (ev) => {
     const p = { ...f.profile };
     try {
       const sug = suggestGoals(p);
-      await store.saveGoals({ ...t, maintenance: sug?.maintenance || null, profile: p, edited: [...f.edited], updatedAt: Date.now() });
+      await saveGoalsKeepingHistory({ ...t, maintenance: sug?.maintenance || null, profile: p, edited: [...f.edited], updatedAt: Date.now() });
       toast("Goals saved 🎯");
       back();
     } catch { toast("Couldn't save. Check your internet and try again."); }
@@ -1641,6 +1822,22 @@ $app.addEventListener("click", async (ev) => {
     state.sheet = false; render();
   } else if (a === "sheet-slot") {
     state.sheetSlot = el.dataset.slot; render();
+  } else if (a === "manual") {
+    state.sheet = false; state.manual = {}; go("manual");
+    setTimeout(() => document.getElementById("mn-name")?.focus(), 50);
+  } else if (a === "manual-slot") {
+    readManual(); state.sheetSlot = el.dataset.slot; render();
+  } else if (a === "manual-save") {
+    const f = readManual();
+    const n = (x) => Math.max(0, Math.round(Number(String(x).replace(",", ".")) || 0));
+    const name = (f.name || "").trim();
+    if (!name) { toast("Give it a name first."); document.getElementById("mn-name")?.focus(); return; }
+    if (!n(f.calories)) { toast("How many calories?"); document.getElementById("mn-calories")?.focus(); return; }
+    const meal = { id: store.newId(), date: state.date, slot: state.sheetSlot || defaultSlot(), name: name.slice(0, 60), photo: null, manual: true,
+      items: [{ name: name.slice(0, 60), amount: "", calories: n(f.calories), protein: n(f.protein), carbs: n(f.carbs), fat: n(f.fat) }],
+      chat: [], createdAt: Date.now(), updatedAt: Date.now() };
+    try { await saveMeal(meal); toast(`Added to ${SLOT_NAME[meal.slot].toLowerCase()} 🐱`); state.manual = null; back(); }
+    catch { toast("Couldn't save. Try again."); }
   } else if (a === "type-meal") {
     state.sheet = false;
     state.meal = newMeal(null);

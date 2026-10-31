@@ -38,6 +38,7 @@ The person tells you or shows you what they ate, and may correct you afterwards.
 - Use simple formatting: short paragraphs, "* " bullet lines and **bold** are fine; no tables.
 - What the app can do from this chat (and nothing else): add food or drinks to the diary, move an entry to another meal or day, and add drinks to the water counter. If the person asks for one of these, confirm in one short sentence (e.g. "Done, added to dinner!", "Added 500 ml to your water!") and the app does it.
 - Water counter rules: every non-alcoholic drink counts toward water (water, sparkling water, tea, coffee, juice, milk, soda, smoothies; alcohol-free beer too). Alcohol (beer, wine, spirits, cocktails) does NOT count toward water, only its calories count. Drinks with calories are also logged as food.
+- If one message lists food for DIFFERENT meals (e.g. "pizza for dinner and a mousse as a snack"), give the numbers for each meal separately. The app files each one into its own meal.
 - Never claim you did anything else (setting goals, logging exercise, changing settings, reminders). If asked, say kindly that you can't do that from the chat and where to find it in the app.`;
 
 // Step 2: a quick, cheap model turns that answer into numbers for the calorie card, plus tap-answers.
@@ -49,9 +50,10 @@ Using Munchkin's LAST answer (and earlier messages for context), list the FULL m
 - "name": short meal name in the person's language, max 5 words.
 - "water_ml": total millilitres of drinks in the person's LAST message that count toward water: every non-alcoholic drink (water, sparkling water, tea, coffee, juice, milk, soda, alcohol-free beer). Alcohol does NOT count. Assume 250 ml per glass or cup if no size is given. 0 if none, and 0 when they are only correcting an earlier message.
 - "water_only": true only if the LAST message is just plain water / sparkling water / unsweetened tea with no calories and no food.
+- If the person's LAST message lists food for MORE THAN ONE meal (e.g. "pizza for dinner and a mousse as a snack"): put in "items" only the food for THIS entry's meal (given below); if none of it is for this meal, use the first meal mentioned and set "action" to {"add": true, "slot": that meal, "day": null}. Put each OTHER meal in "others": [{"slot": "breakfast" | "lunch" | "dinner" | "snack", "day": "today" | "yesterday" | "YYYY-MM-DD" | null, "name": "short name", "items": [...]}]. Otherwise "others": [].
 - "action": ONLY if the person's LAST message asks to add / log / save the food, or to move it to a meal or day, return {"add": true, "slot": "breakfast" | "lunch" | "dinner" | "snack" | null, "day": "today" | "yesterday" | "YYYY-MM-DD" | null}. Otherwise null.
 Reply with ONLY this JSON:
-{"name": "", "estimate": false, "action": null, "water_ml": 0, "water_only": false, "questions": [{"question": "Which pack?", "options": ["500 g pack", "1 kg pack"]}], "items": [{"name": "food item", "amount": "e.g. 300 g", "calories": 0, "protein": 0, "carbs": 0, "fat": 0}]}`;
+{"name": "", "estimate": false, "action": null, "others": [], "water_ml": 0, "water_only": false, "questions": [{"question": "Which pack?", "options": ["500 g pack", "1 kg pack"]}], "items": [{"name": "food item", "amount": "e.g. 300 g", "calories": 0, "protein": 0, "carbs": 0, "fat": 0}]}`;
 
 function cleanJSON(text) {
   try { return JSON.parse(text); } catch {}
@@ -215,6 +217,11 @@ async function fakeChat(turns, photo) {
   const slotWord = ["breakfast", "lunch", "dinner", "snack"].find((w) => last.includes(w));
   if (/water/.test(last)) {
     return { ...normalise({ reply: "Added 500 ml to your water! 💧", meal: { name: "Water", items: [] } }), water: { ml: 500, only: true } };
+  }
+  if (/dinner/.test(last) && /snack/.test(last)) {
+    return { ...normalise({ reply: "Pizza for dinner: about 670 kcal. Fruit mousse as a snack: about 130 kcal.", meal: { name: "Pizza", items: [{ name: "Pizza", amount: "3 slices", calories: 670, protein: 31, carbs: 75, fat: 28 }] } }),
+      action: { add: true, slot: "dinner", day: null },
+      others: [{ slot: "snack", day: null, name: "Fruit mousse", items: [{ name: "Fruit mousse", amount: "1 pouch", calories: 132, protein: 1, carbs: 28, fat: 1 }] }] };
   }
   if (/\b(add|move|log)\b/.test(last) && slotWord) {
     return { ...normalise({ reply: `Done, added to ${slotWord}!`, meal: { name: "Croissant", items: [{ name: "Croissant", amount: "1 medium", calories: 270, protein: 5, carbs: 31, fat: 14 }] } }),
@@ -448,7 +455,7 @@ export async function askAI(turns, photoDataUrl, { demo = false, onStatus = () =
   for (const [model, search] of plan) {
     onStatus(`${search ? "Asking" : "Asking without search,"} ${model}…`);
     try {
-      chat = await engine.chat(key, model, { system: CHAT_RULES, turns, photo: photoDataUrl, search, timeoutMs: search ? 60000 : 40000 });
+      chat = await engine.chat(key, model, { system: CHAT_RULES + slotContext(meal), turns, photo: photoDataUrl, search, timeoutMs: search ? 60000 : 40000 });
       chatModel = model;
       break;
     } catch (e) {
@@ -464,7 +471,7 @@ export async function askAI(turns, photoDataUrl, { demo = false, onStatus = () =
   const transcript = [...turns, { role: "model", text: reply }].slice(-12)
     .map((t) => `${t.role === "model" ? "Munchkin" : "Person"}: ${t.photo || t.photos?.length ? "(sent photos) " : ""}${t.text || (t.role === "model" ? "" : "(sent a photo)")}`).join("\n\n");
   const todayStr = new Date().toISOString().slice(0, 10);
-  const before = (meal && meal.items?.length ? `\n\nPrevious numbers (may be outdated): ${JSON.stringify({ name: meal.name, items: meal.items })}` : "") + `\n\nToday's date: ${todayStr}.`;
+  const before = (meal && meal.items?.length ? `\n\nPrevious numbers (may be outdated): ${JSON.stringify({ name: meal.name, items: meal.items })}` : "") + (meal?.slot && !meal.askOnly ? `\n\nThis entry's meal: ${meal.slot}.` : "") + `\n\nToday's date: ${todayStr}.`;
   let numbers = null;
   for (const model of [models.fast, chatModel].filter((m, i, a) => a.indexOf(m) === i)) {
     try {
@@ -478,6 +485,13 @@ export async function askAI(turns, photoDataUrl, { demo = false, onStatus = () =
   }
   if (!numbers) return { reply, sources, name: meal?.name || "Meal", items: meal?.items || [], countFailed: true };
   return { ...numbers, reply, sources };
+}
+
+// Tell the chat which meal this entry is already filed under, so it never asks.
+function slotContext(meal) {
+  if (!meal?.slot || meal.askOnly) return "";
+  const word = { breakfast: "breakfast", lunch: "lunch", dinner: "dinner", snack: "a snack" }[meal.slot] || meal.slot;
+  return `\n- This entry is already filed as ${word}. Never ask which meal it is. If the person says it was a different meal, just confirm; the app moves it.`;
 }
 
 function readNumbers(parsed, reply) {
@@ -494,6 +508,12 @@ function readNumbers(parsed, reply) {
       day: typeof act.day === "string" ? act.day : null,
     };
   }
+  const SL = ["breakfast", "lunch", "dinner", "snack"];
+  numbers.others = (Array.isArray(m.others) ? m.others : [])
+    .filter((o) => o && SL.includes(o.slot) && Array.isArray(o.items) && o.items.length)
+    .slice(0, 3)
+    .map((o) => ({ slot: o.slot, day: typeof o.day === "string" ? o.day : null, ...normalise({ reply: "", meal: { name: o.name || "Meal", items: o.items } }) }))
+    .map(({ slot, day, name, items }) => ({ slot, day, name, items }));
   numbers.questions = (Array.isArray(m.questions) ? m.questions : [])
     .map((q) => ({
       question: String(q?.question || "").slice(0, 60),
