@@ -669,3 +669,9 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 .conn { margin: 0 0 8px; font-weight: 800; color: var(--muted); }
 .conn.on { color: var(--fat); }
 .conn.off { color: var(--muted); }
+.body-card.cycle { align-items: flex-start; }
+.cycle-note { display: block; color: var(--muted); font-size: .86rem; font-weight: 600; line-height: 1.4; margin-top: 2px; }
+.conn-warn { color: var(--carbs); }
+.undo-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.undo-row p { margin: 0; color: var(--ink); font-weight: 700; }
+.phase small + small { display: block; margin-top: 6px; opacity: .85; }

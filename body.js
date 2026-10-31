@@ -33,8 +33,8 @@ export function cycleInfo(periodDays, manualStarts = []) {
   // merge starts closer than 10 days (spotting, double entries)
   const merged = [];
   for (const s of starts) if (!merged.length || daysBetween(merged[merged.length - 1], s) >= 10) merged.push(s);
-  const gaps = [];
-  for (let i = 1; i < merged.length; i++) { const g = daysBetween(merged[i - 1], merged[i]); if (g >= 20 && g <= 45) gaps.push(g); }
+  const gaps = []; // gaps under 21 days are usually a wrong tap, not a real cycle
+  for (let i = 1; i < merged.length; i++) { const g = daysBetween(merged[i - 1], merged[i]); if (g >= 21 && g <= 45) gaps.push(g); }
   const runs = merged.map((s) => { let n = 0; while (days.has(addDays(s, n))) n++; return n; }).filter((n) => n >= 2 && n <= 10);
   const cycleLen = gaps.length ? Math.round(median(gaps.slice(-6))) : 28;
   const periodLen = runs.length ? Math.round(median(runs.slice(-6))) : 5;
@@ -54,8 +54,8 @@ export function phaseOn(date, info) {
   else if (day > cycleLen + 7) phase = "late";
   else if (Math.abs(day - ov) <= 1) phase = "ovulation";
   else if (day < ov) phase = "follicular";
-  else if (cycleLen - day < 5 && day <= cycleLen) phase = "pre";
-  else if (day > cycleLen) phase = "late";
+  else if (cycleLen - day < 5 && day <= cycleLen + 2) phase = "pre";
+  else if (day > cycleLen + 2) phase = "late";
   else phase = "luteal";
   return { phase, day, next, daysToNext: daysBetween(date, next), cycleLen };
 }
@@ -85,7 +85,54 @@ export const PHASE = {
   luteal: { emoji: "🌙", name: "Second half of your cycle",
     text: () => "Your body uses a bit more energy now (roughly 100–200 kcal a day) and can start holding on to water. Feeling hungrier is normal." },
   pre: { emoji: "🌧️", name: "Before your period",
-    text: (p) => `Your period is due in about ${p.daysToNext} day${p.daysToNext === 1 ? "" : "s"}. Many people hold an extra 0.5–2 kg of water now. That's not fat, and it usually goes a few days after your period starts.` },
+    text: (p) => `${p.daysToNext > 0 ? `Your period is due in about ${p.daysToNext} day${p.daysToNext === 1 ? "" : "s"}` : "Your period is due about now"}. Many people hold an extra 0.5–2 kg of water now. That's not fat, and it usually goes a few days after your period starts.` },
   late: { emoji: "⏳", name: "Period later than expected",
-    text: (p) => `Munchkin expected your period around ${p.next}. Predictions are only estimates; tap "My period started" when it comes.` },
+    text: (p) => `Munchkin expected your period around ${toDate(p.next).toLocaleDateString(undefined, { day: "numeric", month: "long" })}. Predictions are only estimates; tap "My period started" when it comes.` },
 };
+
+// ---------- a short note for every day of the cycle ----------
+// Written for a 28-day cycle; longer or shorter cycles stretch the first half,
+// because the second half (after ovulation) is about 14 days for almost everyone.
+const DAY_NOTES = [
+  null,
+  "Energy is often lower today and the scale may still read high from water. Totally normal.",
+  "Often the heaviest-feeling day. The water from before your period is still there, so don't trust the scale this week.",
+  "Iron helps now: meat, eggs, lentils, beans or spinach. Bloating usually starts to ease.",
+  "Water weight starts to drop. A gentle walk can help with cramps.",
+  "Usually the last heavy day. The scale often starts coming back down.",
+  "Energy tends to come back as your period ends. A good day for a workout you enjoy.",
+  "Appetite is often lower in this part of your cycle, so sticking to your goal can feel easier.",
+  "Often your lightest days: the extra water is gone. A great morning to weigh in.",
+  "Many people feel stronger and more motivated now, and muscles recover well.",
+  "Still in your lightest-days window. Weigh-ins from this week compare best with each other.",
+  "Energy and mood are often at their best around now.",
+  "Ovulation is coming up. Some people notice more energy, some a little bloating.",
+  "A small bump on the scale for a day or two around ovulation is normal. It's water.",
+  "Around ovulation. A mild twinge on one side or some bloating can happen and passes quickly.",
+  "The second half of your cycle starts, and your body begins using a little more energy.",
+  "Your body burns roughly 100–200 kcal more a day in this half, so feeling a bit hungrier is normal.",
+  "Protein and fibre help you stay full now that your appetite starts creeping up.",
+  "You may feel a little warmer than usual. Your body temperature is slightly higher in this half.",
+  "Your body can start holding on to water slowly. Salty food makes it more noticeable.",
+  "Sweet cravings may start. A planned treat feels better than snacking all day.",
+  "Sleep can get lighter this week, and being tired makes hunger louder.",
+  "Hungrier than usual? It's real: your body is using more energy right now.",
+  "Bloating may start. Drinking enough water actually helps your body let go of extra water.",
+  "The scale may creep up 0.5–2 kg over the next days. That's water, not fat.",
+  "PMS days for many: mood dips, cravings, tender breasts. Be kind to yourself.",
+  (p) => `Period in about ${p.daysToNext} days. Extra water is often at its peak now.`,
+  (p) => `Period in about ${p.daysToNext} day${p.daysToNext === 1 ? "" : "s"}. Don't judge your progress by today's weigh-in.`,
+  () => "Period expected about now. Your weight usually drops back a few days after it starts.",
+];
+export function dayNote(p, info) {
+  if (!p) return null;
+  if (p.phase === "late") return PHASE.late.text(p);
+  const L = p.cycleLen, F = Math.max(7, L - 14), d = p.day;
+  let t;
+  if (p.phase === "period") t = Math.min(d, 5);
+  else if (d <= F) t = Math.max(6, 1 + Math.round(((d - 1) * 13) / (F - 1)));
+  else t = Math.min(28, 14 + (d - F));
+  if (L - d < 3 && L - d >= 0 && p.phase !== "period") t = 28 - (L - d); // last days always talk about the coming period
+  const n = DAY_NOTES[t];
+  return typeof n === "function" ? n(p) : n;
+}

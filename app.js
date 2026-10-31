@@ -1,6 +1,6 @@
 import { openViewer } from "./viewer.js";
 import { readBarcode, lookupProduct, forGrams } from "./barcode.js";
-import { weightTrend, weeklyChange, cycleInfo, phaseOn, periodMarks, PHASE, addDays } from "./body.js";
+import { weightTrend, weeklyChange, cycleInfo, phaseOn, periodMarks, PHASE, addDays, dayNote } from "./body.js";
 import { catSVG } from "./cat.js";
 import { ACTIVITY, PACES, paceOf, paceOptions, safeMinimum, suggestGoals, KCAL_PER_KG, EXERCISES, EFFORT, exerciseBurn, stepsBurn, learnUsualSteps } from "./goals.js";
 import { createStore } from "./store.js";
@@ -299,7 +299,8 @@ function exerciseSectionHTML() {
       <div class="steps-row">
         <label for="steps-input">👣 Steps</label>
         <input id="steps-input" type="number" inputmode="numeric" placeholder="from Google Fit" value="${st ? esc(st.steps) : ""}">
-        ${st?.source ? `<span class="steps-note">Synced from ${esc(st.source)}${isNative() ? " automatically" : " by the Android app"}</span>` : ""}
+        ${st?.source ? `<span class="steps-note">Synced from ${st.source === "Google Fit" ? "Health Connect (where Google Fit shares them)" : esc(st.source)}${isNative() ? " automatically" : " by the Android app"}</span>` : ""}
+        ${lowStepsHint(st) ? `<span class="steps-note tip">Steps look low? Check that Google Fit is syncing to Health Connect: in Google Fit, Profile → ⚙️ → Sync Fit with Health Connect. <button class="link-btn" data-action="hc-settings">Open Health Connect</button></span>` : ""}
         ${state.health === "ask" ? `<button class="btn small" data-action="health-connect">Connect Google Fit</button>` : ""}
         ${state.health === "missing" ? `<span class="steps-note">Health Connect isn't on this phone. <button class="link-btn" data-action="health-store">Get it</button></span>` : ""}
         ${state.health === "error" ? `<span class="steps-note">Couldn't read steps: ${esc(state.healthError || "")}</span>` : ""}
@@ -310,6 +311,12 @@ function exerciseSectionHTML() {
       <button class="add-slot" data-action="open-ex">+ Add exercise</button>
     </div>
   </section>`;
+}
+
+// Late in the day with almost no steps usually means Google Fit stopped sharing them.
+function lowStepsHint(st) {
+  if (!isNative() || state.date !== iso(new Date()) || new Date().getHours() < 14) return false;
+  return !st || Number(st.steps) < 1000;
 }
 
 function exSheetHTML() {
@@ -777,7 +784,7 @@ async function applyHealthLink() {
   if (!data || !/^\d{4}-\d{2}-\d{2}$/.test(data.date || "") || data.date > iso(new Date())) return;
   try {
     await store.save({ id: `steps-${data.date}`, type: "steps", date: data.date, steps: data.steps, active: data.active, source: "Google Fit", createdAt: Date.now(), updatedAt: Date.now() });
-    toast(`👣 ${data.steps.toLocaleString()} steps synced from Google Fit`);
+    toast(`👣 ${data.steps.toLocaleString()} steps synced from Health Connect`);
   } catch { toast("Couldn't save your steps. Try again."); }
 }
 readHealthLink();
@@ -879,6 +886,7 @@ async function loadBody() {
     state.body = {
       weights: weightTrend(weights),
       periodDays: period.map((d) => d.date),
+      periodDocs: period,
       manualStarts: period.filter((d) => d.start).map((d) => d.date),
     };
     state.cycle = cycleInfo(state.body.periodDays, state.body.manualStarts);
@@ -905,13 +913,14 @@ function bodyCardHTML() {
 }
 function cycleCardHTML() {
   if (!cycleOn()) return "";
-  const ph = todayPhase();
-  const line = !ph ? "Tap to start tracking your cycle"
-    : ph.phase === "late" ? "Period later than expected"
-    : ph.phase === "period" ? `Day ${ph.day} of your period`
-    : `Day ${ph.day} · period in about ${ph.daysToNext} day${ph.daysToNext === 1 ? "" : "s"}`;
-  return `<button class="body-card cycle" data-action="cycle"><span>${ph ? PHASE[ph.phase].emoji : "🌙"}</span>
-    <span class="bc-main"><strong>${ph ? PHASE[ph.phase].name : "Cycle"}</strong><small>${line}</small></span><span class="bc-go">›</span></button>`;
+  const ph = state.cycle?.starts?.length ? phaseOn(state.date, state.cycle) : null;
+  if (!ph) return `<button class="body-card cycle" data-action="cycle"><span>🌙</span>
+    <span class="bc-main"><strong>Cycle</strong><small>Tap to start tracking your cycle</small></span><span class="bc-go">›</span></button>`;
+  const when = ph.phase === "late" ? "Period later than expected"
+    : ph.phase === "period" ? `Day ${ph.day}`
+    : ph.daysToNext > 0 ? `Day ${ph.day} · period in about ${ph.daysToNext} day${ph.daysToNext === 1 ? "" : "s"}` : `Day ${ph.day} · period due about now`;
+  return `<button class="body-card cycle" data-action="cycle"><span>${PHASE[ph.phase].emoji}</span>
+    <span class="bc-main"><strong>${PHASE[ph.phase].name} <small>· ${when}</small></strong><span class="cycle-note">${esc(dayNote(ph, state.cycle))}</span></span><span class="bc-go">›</span></button>`;
 }
 function weightChartSVG(points, marks, from, to) {
   const W = 340, H = 170, pl = 34, pr = 10, pt = 10, pb = 22;
@@ -981,14 +990,16 @@ function renderCycle() {
       <h1>Cycle</h1>
     </header>
     <section class="card">
-      ${ph ? `<p class="phase"><span>${PHASE[ph.phase].emoji}</span><span><strong>${PHASE[ph.phase].name}</strong><small>${PHASE[ph.phase].text(ph)}</small></span></p>
+      ${ph ? `<p class="phase"><span>${PHASE[ph.phase].emoji}</span><span><strong>${PHASE[ph.phase].name} · day ${ph.day}</strong><small>${esc(dayNote(ph, c))}</small><small>${PHASE[ph.phase].text(ph)}</small></span></p>
         <p class="help">Next period expected around <strong>${new Date(ph.next).toLocaleDateString(undefined, { day: "numeric", month: "long" })}</strong> · cycle about ${c.cycleLen} days${c.learned ? " (learned from your periods)" : " (a typical guess until Munchkin has seen 2 periods)"}.</p>`
       : `<p>Munchkin doesn't know your cycle yet. Tap below when your period starts${isNative() ? ", or connect your period tracker further down" : ""}.</p>`}
-      <div class="btn-row"><button class="btn" data-action="period-start">🩸 My period started today</button></div>
+      ${state.periodJustSaved ? `<div class="notice soft undo-row"><p>🩸 Saved: period started ${state.periodJustSaved === today ? "today" : fmtDay(state.periodJustSaved)}.</p><button class="btn ghost small" data-action="del-period" data-id="period-${state.periodJustSaved}">Undo</button></div>`
+        : `<div class="btn-row"><button class="btn" data-action="period-start">🩸 My period started today</button></div>`}
       <details class="ex-other"><summary>Started on another day?</summary>
         <div class="field-row two"><div class="field"><input id="p-date" type="date" max="${today}" value="${today}"></div><div class="btn-row"><button class="btn small" data-action="period-start-on">Save</button></div></div>
       </details>
     </section>
+    ${loggedPeriodsHTML()}
     <section class="card">
       <h2>Period tracker app</h2>
       ${cycleStatusHTML()}
@@ -1000,6 +1011,19 @@ function renderCycle() {
       <div class="btn-row"><button class="btn ghost small" data-action="body">See your weight ›</button></div>
     </section>
   </main>`;
+}
+const fmtDay = (d) => new Date(d).toLocaleDateString(undefined, { day: "numeric", month: "long" });
+function loggedPeriodsHTML() {
+  const docs = state.body?.periodDocs || [];
+  const mine = docs.filter((d) => !d.source).sort((a, b) => b.date.localeCompare(a.date));
+  const fromHC = docs.length - mine.length;
+  if (!mine.length && !fromHC) return "";
+  return `<section class="card">
+    <h2>Your logged periods</h2>
+    ${mine.length ? `<ul class="wlist">${mine.slice(0, 12).map((d) => `<li><span>🩸 Started ${fmtDay(d.date)}</span><button class="link-btn" data-action="del-period" data-id="${esc(d.id)}" aria-label="Delete ${fmtDay(d.date)}">✕ Delete</button></li>`).join("")}</ul>` : ""}
+    ${fromHC ? `<p class="help">Plus ${fromHC} day${fromHC === 1 ? "" : "s"} from your tracker app. Change those in the tracker itself.</p>` : ""}
+    <p class="help">Tapped by mistake? Delete it here and Munchkin works out your cycle again.</p>
+  </section>`;
 }
 function cycleStatusHTML() {
   if (!isNative()) return `<p>Connecting your tracker works in the Munchkin Android app. Here you can still tap when your period starts.</p>`;
@@ -1014,8 +1038,12 @@ function cycleStatusHTML() {
   if (st.kind === "no-permission") return `<p class="conn off">✕ Not connected</p><div class="notice"><strong>Munchkin isn't allowed to read your cycle yet</strong><p>Open Health Connect → App permissions → Munchkin, and turn on <strong>Menstruation</strong>.</p><div class="btn-row">${hcBtn}<button class="btn ghost small" data-action="cycle-connect">Try again</button></div></div>`;
   if (st.kind === "error") return `<p class="conn off">✕ Something went wrong</p><p class="help">${esc(st.msg)}</p><div class="btn-row"><button class="btn ghost small" data-action="cycle-connect">Try again</button></div>`;
   // connected
-  if (!st.total) return `<p class="conn on">✓ Connected to Health Connect</p><div class="notice"><strong>But there are no period days in Health Connect yet</strong><p>Your tracker app has to share them first. In Health Connect, tap <strong>App permissions → Flo</strong> (or your tracker) and turn on <strong>Menstruation</strong>. If your tracker isn't listed there, look in its own settings for “Health Connect”.</p><div class="btn-row">${hcBtn}<button class="btn ghost small" data-action="cycle-connect">Check again</button></div></div>`;
-  return `<p class="conn on">✓ Connected to Health Connect</p><p class="help">Found <strong>${st.total} period day${st.total === 1 ? "" : "s"}</strong>${st.latest ? `, the latest on ${fmt(st.latest)}` : ""}.${st.fresh ? ` ${st.fresh} new since last time.` : ""} Munchkin checks again every time you open the app.</p><div class="btn-row"><button class="btn ghost small" data-action="cycle-connect">Check again</button></div>`;
+  if (!st.total) return `<p class="conn on">✓ Connected · <span class="conn-warn">your tracker isn't sharing period days yet</span></p>
+    <details class="ex-other"><summary>How to fix</summary>
+      <p class="help">Open Health Connect, tap <strong>App permissions</strong>, find <strong>Flo</strong> (or your tracker) and turn on <strong>Menstruation</strong>. If your tracker isn't listed, look in its own settings for “Health Connect”. If it isn't there either, your tracker doesn't share on Android, so just tap “My period started” here instead.</p>
+      <div class="btn-row">${hcBtn}<button class="btn ghost small" data-action="cycle-connect">Check again</button></div>
+    </details>`;
+  return `<p class="conn on">✓ Connected · ${st.total} period day${st.total === 1 ? "" : "s"} found${st.latest ? `, latest ${fmt(st.latest)}` : ""}</p>`;
 }
 async function saveWeight(kg, date, source = "", hour = null) {
   await store.save({ id: `weight-${date}`, type: "weight", date, kg: Math.round(kg * 10) / 10, hour, source, createdAt: Date.now(), updatedAt: Date.now() });
@@ -1443,7 +1471,7 @@ $app.addEventListener("click", async (ev) => {
   } else if (a === "body") {
     go("body"); loadBody();
   } else if (a === "cycle") {
-    go("cycle"); loadBody(); syncCycle();
+    state.periodJustSaved = null; go("cycle"); loadBody(); syncCycle();
   } else if (a === "save-weight") {
     const kg = Number(String(document.getElementById("w-kg")?.value || "").replace(",", "."));
     const date = document.getElementById("w-date")?.value || iso(new Date());
@@ -1462,8 +1490,11 @@ $app.addEventListener("click", async (ev) => {
     try { await store.saveGoals(next); toast(`Goals updated for ${last.trend.toFixed(1)} kg`); } catch { toast("Couldn't save. Try again."); }
   } else if (a === "period-start" || a === "period-start-on") {
     const d = a === "period-start" ? iso(new Date()) : (document.getElementById("p-date")?.value || iso(new Date()));
-    try { await store.save({ id: `period-${d}`, type: "period", date: d, start: true, source: "", createdAt: Date.now(), updatedAt: Date.now() }); toast("🩸 Saved"); await loadBody(); }
+    try { await store.save({ id: `period-${d}`, type: "period", date: d, start: true, source: "", createdAt: Date.now(), updatedAt: Date.now() }); state.periodJustSaved = d; await loadBody(); }
     catch { toast("Couldn't save. Try again."); }
+  } else if (a === "del-period") {
+    try { await store.remove(el.dataset.id); state.periodJustSaved = null; toast("Deleted"); await loadBody(); }
+    catch { toast("Couldn't delete. Try again."); }
   } else if (a === "cycle-connect") {
     await syncCycle(true); render();
   } else if (a === "hc-settings") {

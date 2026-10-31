@@ -126,11 +126,11 @@ const scl = (m, p, sx, sy) => around(m, p, (q) => q.scaleSelf(sx, sy));
 function matrices(P) {
   const root = view().translateSelf(0, P.rootY); scl(root, PIV.ground, P.rootSx, P.rootSy);
   // the upper body follows the head: body leans a little, chest (bib + paws) about half as much as the head
-  const bodyLean = P.headRot * .15, chestLean = P.headRot * .45 - bodyLean;
+  const bodyLean = P.headRot * .15, chestLean = P.headRot * .75 - bodyLean;
   const leaned = rot(DOMMatrix.fromMatrix(root), PIV.body, bodyLean);
   const body = scl(DOMMatrix.fromMatrix(leaned), PIV.body, P.bodySx, P.bodySy);
   const neckShift = (PIV.neck[1] - PIV.body[1]) * (P.bodySy - 1);
-  const chest = rot(DOMMatrix.fromMatrix(body).translateSelf(P.headDx * .45, P.headDy * .4), PIV.chest, chestLean);
+  const chest = rot(DOMMatrix.fromMatrix(body).translateSelf(P.headDx * .75, P.headDy * .6), PIV.chest, chestLean);
   const head = DOMMatrix.fromMatrix(leaned).translateSelf(P.headDx, neckShift + P.headDy); rot(head, PIV.neck, P.headRot - bodyLean);
   const c = (m) => DOMMatrix.fromMatrix(m);
   return {
