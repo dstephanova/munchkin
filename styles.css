@@ -727,3 +727,12 @@ body.dragging { overflow: hidden; }
 .date-row .datefield { flex: 1; }
 .date-row input[type=number] { flex: 1; min-width: 0; border: 2px solid var(--line); background: var(--surface-2); border-radius: 14px; padding: 10px 12px; font: inherit; font-weight: 700; color: var(--ink); }
 .date-row .unit { color: var(--muted); font-weight: 700; }
+/* your week: just four small numbers */
+.week-card { gap: 6px; padding: 10px 12px; }
+.week-card .wk-tiles { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 6px; }
+.week-card .wk-tiles div { padding: 6px 2px; border-radius: 12px; }
+.week-card .wk-tiles strong { font-size: .95rem; white-space: nowrap; }
+.week-card .wk-tiles small { font-size: .66rem; white-space: nowrap; }
+.wk-tiles .goal strong { color: var(--accent-deep); }
+.wk-foot { margin: 0; font-size: .72rem; color: var(--muted); font-weight: 700; display: flex; align-items: center; justify-content: center; gap: 4px; }
+.wk-foot .info-btn { font-size: .85rem; }

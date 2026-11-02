@@ -414,6 +414,11 @@ function exSheetHTML() {
   </div>`;
 }
 
+// "12 Feb", plus the year when it's far away
+function shortGoalDate(d) {
+  const dt = fromIso(d), far = Math.abs(dt - new Date()) > 300 * 86400000;
+  return dt.toLocaleDateString("en-GB", { day: "numeric", month: "short", ...(far ? { year: "2-digit" } : {}) });
+}
 function weekHTML() {
   const w = state.week;
   if (!w || w.days < 2) return "";
@@ -425,29 +430,15 @@ function weekHTML() {
   const pace = Math.abs(kg) < 0.05 ? "steady" : `${kg > 0 ? "+" : "−"}${Math.abs(kg).toFixed(2)} kg`;
   const ph = todayPhase();
   const cyc = ph && (ph.phase === "pre" || ph.phase === "period") ? (ph.phase === "pre" ? "Your period is due soon, so the scale may read higher this week from water." : "During your period the scale often reads higher from water.") : "";
-  // little bars, one per day, with the goal as a dotted line
-  const daily = w.daily || [];
-  const top = Math.max(1, ...daily.map((d) => Math.max(d.kcal || 0, d.goal || 0))) * 1.08;
-  const BW = 280, BH = 54, gap = 8, bw = (BW - gap * 6) / 7;
-  const goalNow = daily.length ? daily[daily.length - 1].goal : 0;
-  const bars = daily.map((d, i) => {
-    const x = i * (bw + gap);
-    const label = fromIso(d.date).toLocaleDateString("en-GB", { weekday: "narrow" });
-    const bar = d.kcal == null ? `<circle cx="${(x + bw / 2).toFixed(1)}" cy="${BH - 3}" r="2.5" class="wk-empty"/>`
-      : `<rect x="${x.toFixed(1)}" y="${(BH - (d.kcal / top) * BH).toFixed(1)}" width="${bw.toFixed(1)}" height="${((d.kcal / top) * BH).toFixed(1)}" rx="5" class="wk-bar ${d.goal && d.kcal > d.goal * 1.05 ? "over" : ""}"><title>${d.kcal} kcal</title></rect>`;
-    return `${bar}<text x="${(x + bw / 2).toFixed(1)}" y="${BH + 14}" text-anchor="middle">${label}</text>`;
-  }).join("");
-  const goalLine = goalNow ? `<line x1="0" x2="${BW}" y1="${(BH - (goalNow / top) * BH).toFixed(1)}" y2="${(BH - (goalNow / top) * BH).toFixed(1)}" class="wk-goal"/>` : "";
   return `<section class="week-card">
-    <div class="wk-head"><strong>📈 Your week</strong><span>${w.days} of 7 days logged <button class="info-btn" data-action="week-info" aria-label="How this is worked out">ⓘ</button></span></div>
     <div class="wk-tiles">
       <div><strong>${w.avg.toLocaleString()}</strong><small>kcal a day</small></div>
       <div><strong>${w.burn ? `−${w.burn}` : "0"}</strong><small>burned a day</small></div>
-      <div class="${towardGoal ? "good" : ""}"><strong>${pace}</strong><small>${Math.abs(kg) < 0.05 ? "per week" : `per week ${kg < 0 ? "↓" : "↑"}`}</small></div>
+      <div class="${towardGoal ? "good" : ""}"><strong>${pace}</strong><small>a week</small></div>
+      ${fc ? `<div class="${fc.date ? "goal" : ""}"><strong>${fc.date ? shortGoalDate(fc.date) : fc.done ? "🎉" : "—"}</strong><small>🎯 ${fc.target} kg</small></div>` : ""}
     </div>
-    <svg class="wk-bars" viewBox="0 -4 ${BW} ${BH + 20}" role="img" aria-label="Calories for each of the last 7 days">${goalLine}${bars}</svg>
-    ${fc ? `<p class="wk-goalline">${fc.date ? `🎯 ${fc.target} kg around <strong>${niceDate(fc.date)}</strong>` : esc(fc.text.replace(/<[^>]+>/g, ""))}</p>` : ""}
-    ${state.weekInfo ? `<p class="wk-info">From the 7 full days before today (today is still being logged). Days you didn't log are skipped. It's an estimate: water and salt make the scale jump around.${cyc ? ` ${cyc}` : ""}</p>` : cyc ? `<p class="wk-info">${cyc}</p>` : ""}
+    <p class="wk-foot">Last 7 days, ${w.days} logged <button class="info-btn" data-action="week-info" aria-label="How this is worked out">ⓘ</button></p>
+    ${state.weekInfo ? `<p class="wk-info">From the 7 full days before today (today is still being logged). Days you didn't log are skipped. It's an estimate: water and salt make the scale jump around.${fc && !fc.date && !fc.done ? ` ${esc(fc.text.replace(/<[^>]+>/g, ""))}` : ""}${cyc ? ` ${cyc}` : ""}</p>` : cyc ? `<p class="wk-info">${cyc}</p>` : ""}
   </section>`;
 }
 let weekTimer = null;
