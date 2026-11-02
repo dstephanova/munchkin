@@ -626,15 +626,15 @@ function renderMeal() {
       const isLast = i === m.chat.length - 1 && !state.sending;
       const qs = c.questions || (c.options?.length ? [{ question: "", options: c.options }] : []);
       let chips = "";
-      if (isLast && qs.length === 1) {
-        chips = `<div class="quick-replies">${qs[0].options.map((o) => `<button class="chip" data-action="quick" data-text="${esc(o)}">${esc(o)}</button>`).join("")}</div>`;
-      } else if (isLast && qs.length > 1) {
+      if (isLast && qs.length) {
+        // tap as many answers as fit (several per question is fine), then send them together
         const picked = state.answers || {};
+        const any = Object.values(picked).some((v) => v.length);
         chips = `<div class="quick-replies multi">${qs.map((q, qi) => `
           <div class="q-group"><span class="q-label">${esc(q.question)}</span>
-            <div class="q-opts">${q.options.map((o) => `<button class="chip" data-action="pick-answer" data-q="${qi}" data-text="${esc(o)}" aria-pressed="${picked[qi] === o}">${esc(o)}</button>`).join("")}</div>
+            <div class="q-opts">${q.options.map((o) => `<button class="chip" data-action="pick-answer" data-q="${qi}" data-text="${esc(o)}" aria-pressed="${(picked[qi] || []).includes(o)}">${esc(o)}</button>`).join("")}</div>
           </div>`).join("")}
-          <button class="btn" data-action="send-answers" ${Object.keys(picked).length ? "" : "disabled"}>Send answers</button>
+          <button class="btn" data-action="send-answers" ${any ? "" : "disabled"}>Send answer${qs.length > 1 || Object.values(picked).some((v) => v.length > 1) ? "s" : ""}</button>
         </div>`;
       }
       return `<div class="model-row"><span class="mini-cat">${catSVG({ label: "", head: true })}</span><div class="msg model">${pretty(c.text)}${src}</div></div>${chips}`;
@@ -2013,15 +2013,15 @@ $app.addEventListener("click", async (ev) => {
     render();
   } else if (a === "pick-answer") {
     state.answers = state.answers || {};
-    const q = el.dataset.q;
-    if (state.answers[q] === el.dataset.text) delete state.answers[q]; else state.answers[q] = el.dataset.text;
+    const q = el.dataset.q, list = state.answers[q] || [];
+    state.answers[q] = list.includes(el.dataset.text) ? list.filter((x) => x !== el.dataset.text) : [...list, el.dataset.text];
     const ta = document.getElementById("composer"); if (ta) state.composer = ta.value;
     render();
   } else if (a === "send-answers") {
     const last = state.meal.chat[state.meal.chat.length - 1];
     const qs = last?.questions || [];
-    const lines = Object.entries(state.answers || {}).sort(([x], [y]) => x - y)
-      .map(([qi, ans]) => (qs[qi]?.question ? `${qs[qi].question} ${ans}` : ans));
+    const lines = Object.entries(state.answers || {}).filter(([, ans]) => ans.length).sort(([x], [y]) => x - y)
+      .map(([qi, ans]) => (qs[qi]?.question ? `${qs[qi].question} ${ans.join(", ")}` : ans.join(", ")));
     const extra = (document.getElementById("composer")?.value || "").trim();
     if (extra) lines.push(extra);
     state.answers = {};
