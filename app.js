@@ -64,6 +64,24 @@ function catPic(size = "big", label = "Munchkin the cat") {
   const src = size === "big" ? "img/munchkin-480.webp?v=2" : "img/munchkin-160.webp?v=2";
   return `<img class="cat-pic" src="${src}" alt="${label}" draggable="false">`;
 }
+// Date boxes that read "11 October 2026" (day first), still opening the phone's normal date picker.
+const dayFirst = (v) => v ? fromIso(v).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" }) : "Pick a day";
+function dateField(id, value, max = "") {
+  return `<label class="datefield"><span class="df-text">${dayFirst(value)}</span><span class="df-icon" aria-hidden="true">📅</span><input id="${id}" type="date" value="${value}" ${max ? `max="${max}"` : ""}></label>`;
+}
+document.addEventListener("input", (e) => {
+  if (e.target.matches?.(".datefield input")) { const t = e.target.parentElement.querySelector(".df-text"); if (t) t.textContent = dayFirst(e.target.value); }
+});
+document.addEventListener("click", (e) => {
+  const inp = e.target.matches?.(".datefield input") ? e.target : null;
+  try { inp?.showPicker?.(); } catch {}
+});
+// "12 October", plus the year only when it's far away
+function niceDate(d) {
+  const dt = typeof d === "string" ? fromIso(d) : d;
+  const far = Math.abs(dt - new Date()) > 300 * 86400000;
+  return dt.toLocaleDateString("en-GB", { day: "numeric", month: "long", ...(far ? { year: "numeric" } : {}) });
+}
 function iso(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
@@ -274,8 +292,7 @@ function renderDay() {
       <button class="icon-btn" data-action="next-day" aria-label="Next day" ${isToday ? "disabled" : ""}>${ICON.next}</button>
     </nav>
     ${summaryHTML(t, bubble, dayBurn(state.meals))}
-    ${bodyCardHTML()}
-    ${cycleCardHTML()}
+    ${tilesHTML()}
     ${weekHTML()}
     ${slotsHTML}
     ${waterHTML()}
@@ -401,10 +418,37 @@ function weekHTML() {
   const w = state.week;
   if (!w || w.days < 2) return "";
   const kg = w.kgWeek;
-  const pace = Math.abs(kg) < 0.05 ? "about steady" : `about ${kg > 0 ? "+" : "−"}${Math.abs(kg).toFixed(2)} kg a week`;
+  const fc = goalForecast();
+  const target = Number(state.goals?.profile?.goalWeight);
+  const current = state.body?.weights?.length ? state.body.weights[state.body.weights.length - 1].trend : Number(state.goals?.profile?.weight);
+  const towardGoal = target && current && Math.abs(kg) >= 0.05 && Math.sign(kg) === Math.sign(target - current);
+  const pace = Math.abs(kg) < 0.05 ? "steady" : `${kg > 0 ? "+" : "−"}${Math.abs(kg).toFixed(2)} kg`;
   const ph = todayPhase();
-  const cyc = ph && (ph.phase === "pre" || ph.phase === "period") ? ` <span>${ph.phase === "pre" ? "Your period is due soon, so the scale may read higher this week from water." : "During your period the scale often reads higher from water."}</span>` : "";
-  return `<p class="week-note">📈 Last 7 days (before today): you averaged <strong>${w.avg} kcal</strong> a day${w.burn ? ` (minus ${w.burn} burned)` : ""} over ${w.days} logged days. At this pace that's <strong>${pace}</strong>. <span>Estimate. Water and salt make the scale jump around.</span>${cyc}</p>`;
+  const cyc = ph && (ph.phase === "pre" || ph.phase === "period") ? (ph.phase === "pre" ? "Your period is due soon, so the scale may read higher this week from water." : "During your period the scale often reads higher from water.") : "";
+  // little bars, one per day, with the goal as a dotted line
+  const daily = w.daily || [];
+  const top = Math.max(1, ...daily.map((d) => Math.max(d.kcal || 0, d.goal || 0))) * 1.08;
+  const BW = 280, BH = 54, gap = 8, bw = (BW - gap * 6) / 7;
+  const goalNow = daily.length ? daily[daily.length - 1].goal : 0;
+  const bars = daily.map((d, i) => {
+    const x = i * (bw + gap);
+    const label = fromIso(d.date).toLocaleDateString("en-GB", { weekday: "narrow" });
+    const bar = d.kcal == null ? `<circle cx="${(x + bw / 2).toFixed(1)}" cy="${BH - 3}" r="2.5" class="wk-empty"/>`
+      : `<rect x="${x.toFixed(1)}" y="${(BH - (d.kcal / top) * BH).toFixed(1)}" width="${bw.toFixed(1)}" height="${((d.kcal / top) * BH).toFixed(1)}" rx="5" class="wk-bar ${d.goal && d.kcal > d.goal * 1.05 ? "over" : ""}"><title>${d.kcal} kcal</title></rect>`;
+    return `${bar}<text x="${(x + bw / 2).toFixed(1)}" y="${BH + 14}" text-anchor="middle">${label}</text>`;
+  }).join("");
+  const goalLine = goalNow ? `<line x1="0" x2="${BW}" y1="${(BH - (goalNow / top) * BH).toFixed(1)}" y2="${(BH - (goalNow / top) * BH).toFixed(1)}" class="wk-goal"/>` : "";
+  return `<section class="week-card">
+    <div class="wk-head"><strong>📈 Your week</strong><span>${w.days} of 7 days logged <button class="info-btn" data-action="week-info" aria-label="How this is worked out">ⓘ</button></span></div>
+    <div class="wk-tiles">
+      <div><strong>${w.avg.toLocaleString()}</strong><small>kcal a day</small></div>
+      <div><strong>${w.burn ? `−${w.burn}` : "0"}</strong><small>burned a day</small></div>
+      <div class="${towardGoal ? "good" : ""}"><strong>${pace}</strong><small>${Math.abs(kg) < 0.05 ? "per week" : `per week ${kg < 0 ? "↓" : "↑"}`}</small></div>
+    </div>
+    <svg class="wk-bars" viewBox="0 -4 ${BW} ${BH + 20}" role="img" aria-label="Calories for each of the last 7 days">${goalLine}${bars}</svg>
+    ${fc ? `<p class="wk-goalline">${fc.date ? `🎯 ${fc.target} kg around <strong>${niceDate(fc.date)}</strong>` : esc(fc.text.replace(/<[^>]+>/g, ""))}</p>` : ""}
+    ${state.weekInfo ? `<p class="wk-info">From the 7 full days before today (today is still being logged). Days you didn't log are skipped. It's an estimate: water and salt make the scale jump around.${cyc ? ` ${cyc}` : ""}</p>` : cyc ? `<p class="wk-info">${cyc}</p>` : ""}
+  </section>`;
 }
 let weekTimer = null;
 let stepsLearnedFor = "";
@@ -439,7 +483,12 @@ function refreshWeek() {
           burn += dayBurn(list).total;
         }
         const avg = Math.round(eaten / days.length), avgBurn = Math.round(burn / days.length);
-        state.week = { days: days.length, avg, burn: avgBurn, kgWeek: ((avg - avgBurn - maint) * 7) / KCAL_PER_KG };
+        const daily = [...Array(7)].map((_, i) => {
+          const date = shiftDate(start, i), list = byDay[date] || [];
+          const logged = list.some(isMealDoc);
+          return { date, kcal: logged ? sumItems(list.filter(isMealDoc).flatMap((m) => m.items || [])).calories : null, goal: (goalsOn(date)?.calories || 0) + dayBurn(list).total };
+        });
+        state.week = { days: days.length, avg, burn: avgBurn, kgWeek: ((avg - avgBurn - maint) * 7) / KCAL_PER_KG, daily };
       }
     } catch { state.week = null; }
     if (state.view === "day") render();
@@ -468,13 +517,14 @@ function sheetHTML() {
 }
 
 // ---------- drag a meal to another meal slot (press and hold on a phone) ----------
-const drag = { timer: null, id: null, el: null, ghost: null, startX: 0, startY: 0, dx: 0, dy: 0, active: false, over: null, justDropped: 0 };
-function dragStart(x, y, target) {
+const drag = { timer: null, id: null, el: null, ghost: null, startX: 0, startY: 0, dx: 0, dy: 0, active: false, over: null, justDropped: 0, mouse: false };
+// On a phone you press and hold first (so scrolling still works); with a mouse you just drag.
+function dragStart(x, y, target, mouse = false) {
   const wrap = target.closest?.("[data-drag]");
   if (!wrap || state.view !== "day" || target.closest(".del-btn")) return false;
-  drag.id = wrap.dataset.drag; drag.el = wrap; drag.startX = x; drag.startY = y;
+  drag.id = wrap.dataset.drag; drag.el = wrap; drag.startX = x; drag.startY = y; drag.mouse = mouse;
   clearTimeout(drag.timer);
-  drag.timer = setTimeout(() => dragBegin(x, y), 380);
+  if (!mouse) drag.timer = setTimeout(() => dragBegin(x, y), 380);
   return true;
 }
 function dragBegin(x, y) {
@@ -493,7 +543,11 @@ function dragBegin(x, y) {
 }
 function dragMove(x, y) {
   if (!drag.id) return;
-  if (!drag.active) { if (Math.hypot(x - drag.startX, y - drag.startY) > 10) dragCancel(); return; }
+  if (!drag.active) {
+    const moved = Math.hypot(x - drag.startX, y - drag.startY);
+    if (drag.mouse) { if (moved > 6) dragBegin(drag.startX, drag.startY); else return; }
+    else { if (moved > 10) dragCancel(); return; }
+  }
   drag.ghost.style.left = x - drag.dx + "px"; drag.ghost.style.top = y - drag.dy + "px";
   drag.ghost.hidden = true;
   const slot = document.elementFromPoint(x, y)?.closest?.(".slot[data-slot]");
@@ -518,13 +572,14 @@ function dragCancel() {
   clearTimeout(drag.timer);
   drag.ghost?.remove(); drag.el?.classList.remove("drag-src"); drag.over?.classList.remove("drop-here");
   document.body.classList.remove("dragging");
-  Object.assign(drag, { timer: null, id: null, el: null, ghost: null, active: false, over: null });
+  Object.assign(drag, { timer: null, id: null, el: null, ghost: null, active: false, over: null, mouse: false });
 }
 $app.addEventListener("touchstart", (e) => { if (e.touches.length === 1) dragStart(e.touches[0].clientX, e.touches[0].clientY, e.target); }, { passive: true });
 document.addEventListener("touchmove", (e) => { if (!drag.id) return; if (drag.active) e.preventDefault(); dragMove(e.touches[0].clientX, e.touches[0].clientY); }, { passive: false });
 document.addEventListener("touchend", () => { if (drag.id) dragEnd(); });
 document.addEventListener("touchcancel", dragCancel);
-$app.addEventListener("mousedown", (e) => { if (e.button === 0 && dragStart(e.clientX, e.clientY, e.target)) e.preventDefault(); });
+$app.addEventListener("mousedown", (e) => { if (e.button === 0 && dragStart(e.clientX, e.clientY, e.target, true)) e.preventDefault(); });
+$app.addEventListener("dragstart", (e) => { if (e.target.closest?.("[data-drag]")) e.preventDefault(); }); // no browser image-dragging
 document.addEventListener("mousemove", (e) => { if (drag.id) dragMove(e.clientX, e.clientY); });
 document.addEventListener("mouseup", () => { if (drag.id) dragEnd(); });
 document.addEventListener("contextmenu", (e) => { if (drag.id) e.preventDefault(); });
@@ -1097,7 +1152,7 @@ function goalForecast() {
   const current = last ? last.trend : Number(prof?.weight);
   if (!(current > 30)) return null;
   const need = target - current;
-  const fmtD = (d) => new Date(d).toLocaleDateString(undefined, { day: "numeric", month: "long", ...(new Date(d).getFullYear() !== new Date().getFullYear() ? { year: "numeric" } : {}) });
+  const fmtD = (d) => niceDate(d);
   if (Math.abs(need) < 0.3) return { target, done: true, short: `🎉 You're at your goal of ${target} kg`, text: `🎉 You're at your goal weight of ${target} kg. Amazing, queen!` };
   const recent = w.filter((e) => e.date >= shiftDate(iso(new Date()), -60));
   const span = recent.length >= 4 ? Math.round((new Date(recent[recent.length - 1].date) - new Date(recent[0].date)) / 86400000) : 0;
@@ -1119,40 +1174,45 @@ function goalForecast() {
   const date = shiftDate(iso(new Date()), days);
   const pace = `${rate < 0 ? "−" : "+"}${Math.abs(rate).toFixed(2)} kg a week`;
   const basis = { trend: "your weigh-ins", week: "what you ate this week", plan: "your planned pace" }[source];
-  return { target, date, rate, source, short: `🎯 ${target} kg around ${fmtD(date)} <span class="goal-basis">· from ${basis}</span>`,
+  return { target, date, rate, source, basis, short: `🎯 ${target} kg around ${fmtD(date)} <span class="goal-basis">· from ${basis}</span>`,
     text: source === "trend"
       ? `Based on your weigh-ins (${pace}), you'll reach ${target} kg around <strong>${fmtD(date)}</strong> 🎯`
       : source === "week"
       ? `Based on what you ate this week (${pace}), you'll reach ${target} kg around <strong>${fmtD(date)}</strong> 🎯 After 2 weeks of weigh-ins, Munchkin uses your real weight trend instead.`
       : `If you keep to your planned pace (${pace}), you'll reach ${target} kg around <strong>${fmtD(date)}</strong> 🎯 Log a few days of food and it switches to what you actually eat.` };
 }
+function shortDay(d) {
+  const today = iso(new Date());
+  if (d === today) return "Today";
+  if (d === shiftDate(today, -1)) return "Yesterday";
+  const diff = Math.round((fromIso(today) - fromIso(d)) / 86400000);
+  return diff < 7 ? fromIso(d).toLocaleDateString("en-GB", { weekday: "short" }) : fromIso(d).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+}
 function bodyCardHTML() {
   const w = state.body?.weights || [];
   const last = w[w.length - 1];
   const ch = weeklyChange(w);
-  const fc = goalForecast();
-  const goalLine = fc ? `<small class="goal-line">${fc.short}</small>` : "";
-  if (!last) {
-    return `<button class="body-card" data-action="body"><span>⚖️</span><span class="bc-main"><strong>Weigh in</strong><small>Track your weight trend</small>${goalLine}</span><span class="bc-go">›</span></button>`;
-  }
-  return `<button class="body-card" data-action="body">
-    <span>⚖️</span>
-    <span class="bc-main">
-      <strong>${last.kg.toFixed(1)} kg${last.trend !== last.kg ? ` <small>· trend ${last.trend.toFixed(1)}</small>` : ""}</strong>
-      <small>${ch != null ? `${ch > 0 ? "+" : ch < 0 ? "−" : ""}${Math.abs(ch).toFixed(1)} kg this week` : `Last weigh-in ${prettyDate(last.date).toLowerCase()}`}</small>
-      ${goalLine}
-    </span><span class="bc-go">›</span></button>`;
+  const line = !last ? "Track your trend"
+    : `${shortDay(last.date)}${ch != null && Math.abs(ch) >= 0.05 ? ` · ${ch > 0 ? "+" : "−"}${Math.abs(ch).toFixed(1)} this wk` : ""}`;
+  return `<button class="tile" data-action="body"><span class="t-top">⚖️ <strong>${last ? `${last.kg.toFixed(1)} kg` : "Weigh in"}</strong></span><small>${line}</small></button>`;
 }
 function cycleCardHTML() {
   if (!cycleOn()) return "";
   const ph = state.cycle?.starts?.length ? phaseOn(state.date, state.cycle) : null;
-  if (!ph) return `<button class="body-card cycle" data-action="cycle"><span>🌙</span>
-    <span class="bc-main"><strong>Cycle</strong><small>Tap to start tracking your cycle</small></span><span class="bc-go">›</span></button>`;
-  const when = ph.phase === "late" ? "Period later than expected"
-    : ph.phase === "period" ? `Day ${ph.day}`
-    : ph.daysToNext > 0 ? `Day ${ph.day} · period in about ${ph.daysToNext} day${ph.daysToNext === 1 ? "" : "s"}` : `Day ${ph.day} · period due about now`;
-  return `<button class="body-card cycle" data-action="cycle"><span>${PHASE[ph.phase].emoji}</span>
-    <span class="bc-main"><strong>${PHASE[ph.phase].name} <small>· ${when}</small></strong><span class="cycle-note">${esc(dayNote(ph, state.cycle))}</span></span><span class="bc-go">›</span></button>`;
+  if (!ph) return `<button class="tile" data-action="cycle"><span class="t-top">🌙 <strong>Cycle</strong></span><small>Tap to start</small></button>`;
+  const line = ph.phase === "late" ? "later than expected"
+    : ph.phase === "period" ? "period"
+    : ph.daysToNext > 0 ? `period in ~${ph.daysToNext} day${ph.daysToNext === 1 ? "" : "s"}` : "period due now";
+  return `<button class="tile" data-action="cycle"><span class="t-top">${PHASE[ph.phase].emoji} <strong>Day ${ph.day}</strong></span><small>${line}</small></button>`;
+}
+function cycleNoteHTML() {
+  if (!cycleOn() || !state.cycle?.starts?.length) return "";
+  const ph = phaseOn(state.date, state.cycle);
+  return ph ? `<p class="cycle-line">${PHASE[ph.phase].emoji} ${esc(dayNote(ph, state.cycle))}</p>` : "";
+}
+function tilesHTML() {
+  const c = cycleCardHTML();
+  return `<div class="tiles ${c ? "two" : ""}">${bodyCardHTML()}${c}</div>${cycleNoteHTML()}`;
 }
 function weightChartSVG(points, marks, from, to, proj = null) {
   const W = 340, H = 170, pl = 34, pr = 10, pt = 10, pb = 22;
@@ -1207,17 +1267,22 @@ function renderBody() {
       <h2>Weigh in</h2>
       <div class="field-row two">
         <div class="field"><label for="w-kg">Weight (kg)</label><input id="w-kg" type="number" inputmode="decimal" step="0.1" placeholder="e.g. 66.7"></div>
-        <div class="field"><label for="w-date">Day</label><input id="w-date" type="date" value="${today}" max="${today}"></div>
+        <div class="field"><label for="w-date">Day</label>${dateField("w-date", today, today)}</div>
       </div>
       <div class="btn-row"><button class="btn" data-action="save-weight">Save</button></div>
       <p class="help">Morning weigh-ins compare best: after the toilet, before eating or drinking, same scale.</p>
       ${showTip ? `<p class="help tip">Today's weigh-in was later in the day, so it may read 0.5–1.5 kg higher from food and drinks.</p>` : ""}
     </section>
     <section class="card">
+      <h2>🎯 Goal weight</h2>
+      <div class="date-row"><input id="w-goal" type="number" inputmode="decimal" step="0.1" min="30" max="300" value="${esc(prof?.goalWeight || "")}" placeholder="e.g. 60" aria-label="Goal weight in kg"><span class="unit">kg</span><button class="btn small" data-action="save-goal-weight">Save</button></div>
+      ${fc ? `<p class="goal-forecast">${fc.text}</p>` : `<p class="help">Munchkin shows when you might get there, based on what you eat and your weigh-ins.</p>`}
+    </section>
+    <section class="card">
       <h2>Your trend</h2>
       ${last ? `<div class="wstats"><div><strong>${last.trend.toFixed(1)} kg</strong><small>trend</small></div><div><strong>${ch == null ? "—" : `${ch > 0 ? "+" : ch < 0 ? "−" : ""}${Math.abs(ch).toFixed(1)} kg`}</strong><small>per week</small></div><div><strong>${last.kg.toFixed(1)} kg</strong><small>last weigh-in</small></div></div>
       ${weightChartSVG(pts, marks, from, today, fc?.date ? fc : null)}
-      ${fc ? `<p class="goal-forecast">${fc.text}</p>` : `<p class="help">Set a goal weight in Goals to see when you might reach it.</p>`}
+      ${fc ? `<p class="goal-forecast">${fc.text}</p>` : ""}
       <p class="help">Dots are your weigh-ins; the line is your trend, which ignores day-to-day water jumps.${cycleOn() ? ` Pink bands are period days (lighter = predicted). <button class="link-btn inline" data-action="cycle">See your cycle ›</button>` : ""}</p>
       ${suggestUpdate ? `<div class="notice soft"><p>Your daily calories and protein are still worked out for <strong>${goalW} kg</strong>. Your weigh-ins now say about <strong>${last.trend.toFixed(1)} kg</strong>.</p><p class="help">Updating gives you slightly ${last.trend < goalW ? "lower" : "higher"} targets (never under ${safeMinimum(prof)} kcal). Numbers you typed yourself stay. Tip: wait for a week of weigh-ins so water jumps don't fool it.</p><div class="btn-row"><button class="btn ghost small" data-action="weight-goals">Update my goals to ${last.trend.toFixed(1)} kg</button></div></div>` : ""}
       <ul class="wlist">${[...w].reverse().slice(0, 8).map((e) => `<li><span>${prettyDate(e.date)}${e.source ? ` <em>${esc(e.source)}</em>` : ""}</span><span>${e.kg.toFixed(1)} kg <button class="link-btn" data-action="del-weight" data-date="${e.date}" aria-label="Delete">✕</button></span></li>`).join("")}</ul>`
@@ -1242,7 +1307,7 @@ function renderCycle() {
       ${state.periodJustSaved ? `<div class="notice soft undo-row"><p>🩸 Saved: period started ${state.periodJustSaved === today ? "today" : fmtDay(state.periodJustSaved)}.</p><button class="btn ghost small" data-action="del-period" data-id="period-${state.periodJustSaved}">Undo</button></div>`
         : `<div class="btn-row"><button class="btn" data-action="period-start">🩸 My period started today</button></div>`}
       <details class="ex-other"><summary>Started on another day?</summary>
-        <div class="field-row two"><div class="field"><input id="p-date" type="date" max="${today}" value="${today}"></div><div class="btn-row"><button class="btn small" data-action="period-start-on">Save</button></div></div>
+        <div class="date-row">${dateField("p-date", today, today)}<button class="btn small" data-action="period-start-on">Save</button></div>
       </details>
     </section>
     ${loggedPeriodsHTML()}
@@ -1900,6 +1965,14 @@ $app.addEventListener("click", async (ev) => {
     state.sheet = false; render();
   } else if (a === "sheet-slot") {
     state.sheetSlot = el.dataset.slot; render();
+  } else if (a === "save-goal-weight") {
+    const v = Math.round(Number(String(document.getElementById("w-goal")?.value || "").replace(",", ".")) * 10) / 10;
+    if (!state.goals) { toast("Set your daily goals first."); openGoals(); return; }
+    if (v && (v < 30 || v > 300)) { toast("That goal weight looks off. Try again."); return; }
+    try { await store.saveGoals({ ...state.goals, profile: { ...state.goals.profile, goalWeight: v || "" }, updatedAt: Date.now() }); toast(v ? `🎯 Goal set: ${v} kg` : "Goal weight removed"); }
+    catch { toast("Couldn't save. Try again."); }
+  } else if (a === "week-info") {
+    state.weekInfo = !state.weekInfo; const y = window.scrollY; render(); window.scrollTo(0, y);
   } else if (a === "manual") {
     state.sheet = false; state.manual = {}; go("manual");
     setTimeout(() => document.getElementById("mn-name")?.focus(), 50);
@@ -2162,7 +2235,7 @@ async function start() {
     loadBody().then(() => syncCycle());
     restoreOpen();
     setTimeout(deliverRestoredPhoto, 50);
-    unsubGoals = store.watchGoals((g) => { state.goals = g; state.cycle && null; if (state.view === "day" || state.view === "settings") render(); refreshWeek(); });
+    unsubGoals = store.watchGoals((g) => { state.goals = g; state.cycle && null; if (["day", "settings", "body"].includes(state.view)) render(); refreshWeek(); });
     render();
   });
   if ("serviceWorker" in navigator && !demo) {
