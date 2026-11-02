@@ -404,7 +404,7 @@ function weekHTML() {
   const pace = Math.abs(kg) < 0.05 ? "about steady" : `about ${kg > 0 ? "+" : "−"}${Math.abs(kg).toFixed(2)} kg a week`;
   const ph = todayPhase();
   const cyc = ph && (ph.phase === "pre" || ph.phase === "period") ? ` <span>${ph.phase === "pre" ? "Your period is due soon, so the scale may read higher this week from water." : "During your period the scale often reads higher from water."}</span>` : "";
-  return `<p class="week-note">📈 Last 7 days: you averaged <strong>${w.avg} kcal</strong> a day${w.burn ? ` (minus ${w.burn} burned)` : ""} over ${w.days} logged days. At this pace that's <strong>${pace}</strong>. <span>Estimate. Water and salt make the scale jump around.</span>${cyc}</p>`;
+  return `<p class="week-note">📈 Last 7 days (before today): you averaged <strong>${w.avg} kcal</strong> a day${w.burn ? ` (minus ${w.burn} burned)` : ""} over ${w.days} logged days. At this pace that's <strong>${pace}</strong>. <span>Estimate. Water and salt make the scale jump around.</span>${cyc}</p>`;
 }
 let weekTimer = null;
 let stepsLearnedFor = "";
@@ -424,7 +424,8 @@ function refreshWeek() {
     learnSteps();
     const maint = state.goals?.maintenance;
     if (!maint) { state.week = null; return; }
-    const end = iso(new Date()), start = shiftDate(end, -6);
+    // the 7 full days before today: today is still being logged, so it would pull the average down
+    const end = shiftDate(iso(new Date()), -1), start = shiftDate(end, -6);
     try {
       const docs = await store.getRange(start, end);
       const byDay = {};
@@ -1060,9 +1061,9 @@ async function syncKeysDown() {
 
 
 // ---------- weight & cycle ----------
-// Cycle tracking is switched off for now: Flo doesn't share period days with Health Connect.
-// Set this to true to bring back the cycle card, Cycle page, pink bands and the "Track my cycle" switch.
-const CYCLE_FEATURE = false;
+// Cycle tracking on/off switch. Flo doesn't share period days with Health Connect, so periods are tapped in by hand
+// (a tracker that does share is read automatically). Set to false to hide the cycle card, Cycle page, pink bands and the "Track my cycle" switch.
+const CYCLE_FEATURE = true;
 const cycleOn = () => CYCLE_FEATURE && state.goals?.profile?.sex === "female" && state.goals?.profile?.trackCycle !== false;
 async function loadBody() {
   if (!store || !state.user) return;
@@ -1245,11 +1246,11 @@ function renderCycle() {
       </details>
     </section>
     ${loggedPeriodsHTML()}
-    <section class="card">
+    ${state.cycleConn?.kind === "connected" && !state.cycleConn.total ? "" : `<section class="card">
       <h2>Period tracker app</h2>
       ${cycleStatusHTML()}
       <p class="help">Munchkin reads from any tracker app that shares with Health Connect (like Flo). Your cycle stays private in your own diary.</p>
-    </section>
+    </section>`}
     <section class="card">
       <h2>Why your weight moves</h2>
       <p class="help">Your body holds more water in the days before your period, often 0.5–2 kg. That's not fat, and it usually goes a few days after your period starts. Your weight chart shows period days as pink bands so you can spot this.</p>
