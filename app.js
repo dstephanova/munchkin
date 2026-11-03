@@ -5,6 +5,7 @@ import { catSVG } from "./cat.js";
 import { ACTIVITY, PACES, paceOf, paceOptions, safeMinimum, suggestGoals, KCAL_PER_KG, EXERCISES, EFFORT, exerciseBurn, stepsBurn, learnUsualSteps } from "./goals.js";
 import { createStore } from "./store.js";
 import { createCat } from "./cat-rig.js";
+import { foodIcon, ICON_KEYS } from "./food-icons.js";
 import { askExercise, askAI, askBarcode, hasKey, loadAISettings, saveAISettings, testProvider, PROVIDERS } from "./ai.js";
 
 const demo = new URLSearchParams(location.search).has("demo");
@@ -261,7 +262,7 @@ function renderDay() {
               <span class="btn-row"><button class="btn danger small" data-action="home-delete" data-id="${esc(m.id)}">Delete</button><button class="btn ghost small" data-action="home-keep">Keep</button></span></div>`;
           }
           return `<div class="meal-wrap" data-drag="${esc(m.id)}"><button class="meal-card" data-action="open-meal" data-id="${esc(m.id)}">
-            ${m.photo ? `<img class="thumb" src="${esc(m.photo)}" alt="Open photo" data-action="view-thumb" data-id="${esc(m.id)}">` : `<span class="thumb">${catPic("small", "")}</span>`}
+            ${m.photo ? `<img class="thumb" src="${esc(m.photo)}" alt="Open photo" data-action="view-thumb" data-id="${esc(m.id)}">` : `<span class="thumb food-icon">${foodIcon(m)}</span>`}
             <span class="info"><span class="name">${esc(m.name || "Meal")}</span>
               <span class="mini">P ${mt.protein}g · C ${mt.carbs}g · F ${mt.fat}g</span></span>
             <span class="kc">${mt.calories} kcal</span>
@@ -1727,6 +1728,7 @@ async function runAI() {
     const prevItems = m.items;
     m.name = res.name;
     m.items = res.items;
+    if (res.icon) m.icon = res.icon;
     // Plain water only: don't turn an empty chat into a food entry.
     if (res.water?.only && !prevItems.length && !res.items.length) m.waterOnly = true;
     state.sending = false;

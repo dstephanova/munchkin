@@ -48,13 +48,14 @@ Using Munchkin's LAST answer (and earlier messages for context), list the FULL m
 - If a macro is missing, estimate it sensibly. If nothing edible was eaten, return "items": [].
 - "questions": for EACH question Munchkin's last answer asks the person (max 3), give the question shortened (max 40 characters) and 2-4 very short tap-answers they could send back (max 30 characters each). Use the person's language. If Munchkin asks nothing, [].
 - "name": short meal name in the person's language, max 5 words.
+- "icon": the ONE picture that fits the meal best, from: plate, pizza, burger, sandwich, salad, soup, pasta, rice, sushi, egg, toast, oats, chicken, meat, fish, apple, banana, veggies, cheese, yogurt, cake, cookie, chocolate, icecream, coffee, juice, smoothie, wine, beer, chips, nuts, bar, water. Use the main food; "plate" for a mixed meal that fits nothing else.
 - "water_ml": total millilitres of drinks in the person's LAST message that count toward water: every non-alcoholic drink (water, sparkling water, tea, coffee, juice, milk, soda, alcohol-free beer). Alcohol does NOT count. Assume 250 ml per glass or cup if no size is given. 0 if none, and 0 when they are only correcting an earlier message.
 - "water_only": true only if the LAST message is just plain water / sparkling water / unsweetened tea with no calories and no food.
 - If the person's LAST message lists food for MORE THAN ONE meal (e.g. "pizza for dinner and a mousse as a snack"): put in "items" only the food for THIS entry's meal (given below); if none of it is for this meal, use the first meal mentioned and set "action" to {"add": true, "slot": that meal, "day": null}. Put each OTHER meal in "others": [{"slot": "breakfast" | "lunch" | "dinner" | "snack", "day": "today" | "yesterday" | "YYYY-MM-DD" | null, "name": "short name", "items": [...]}]. Otherwise "others": [].
 - "label": ONLY if a photo in the chat is a nutrition label you can read: {"per100": {"calories": 0, "protein": 0, "carbs": 0, "fat": 0}, "pack_grams": null or the package weight in grams, "product": "product name from the package"}. Otherwise null.
 - "action": ONLY if the person's LAST message asks to add / log / save the food, or to move it to a meal or day, return {"add": true, "slot": "breakfast" | "lunch" | "dinner" | "snack" | null, "day": "today" | "yesterday" | "YYYY-MM-DD" | null}. Otherwise null.
 Reply with ONLY this JSON:
-{"name": "", "estimate": false, "action": null, "others": [], "label": null, "water_ml": 0, "water_only": false, "questions": [{"question": "Which pack?", "options": ["500 g pack", "1 kg pack"]}], "items": [{"name": "food item", "amount": "e.g. 300 g", "calories": 0, "protein": 0, "carbs": 0, "fat": 0}]}`;
+{"name": "", "icon": "plate", "estimate": false, "action": null, "others": [], "label": null, "water_ml": 0, "water_only": false, "questions": [{"question": "Which pack?", "options": ["500 g pack", "1 kg pack"]}], "items": [{"name": "food item", "amount": "e.g. 300 g", "calories": 0, "protein": 0, "carbs": 0, "fat": 0}]}`;
 
 function cleanJSON(text) {
   try { return JSON.parse(text); } catch {}
@@ -499,6 +500,8 @@ function readNumbers(parsed, reply) {
   const m = parsed.meal || parsed;
   const numbers = normalise({ reply, meal: m });
   numbers.estimate = !!m.estimate;
+  const ICONS = ["plate", "pizza", "burger", "sandwich", "salad", "soup", "pasta", "rice", "sushi", "egg", "toast", "oats", "chicken", "meat", "fish", "apple", "banana", "veggies", "cheese", "yogurt", "cake", "cookie", "chocolate", "icecream", "coffee", "juice", "smoothie", "wine", "beer", "chips", "nuts", "bar", "water"];
+  numbers.icon = ICONS.includes(m.icon) ? m.icon : null;
   const ml = Math.round(Number(m.water_ml) || 0);
   numbers.water = ml > 0 && ml <= 5000 ? { ml, only: !!m.water_only } : null;
   const act = m.action;
