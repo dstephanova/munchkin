@@ -76,4 +76,5 @@ export function guessIcon(meal) {
   for (const [key, re] of WORDS) if (re.test(text)) return key;
   return "plate";
 }
-export const foodIcon = (meal) => FOOD_ICONS[guessIcon(meal)].svg;
+// The painted icons live in img/food (one per key); the little drawn SVGs above are kept as spares.
+export const foodIcon = (meal) => `<img class="food-img" src="img/food/${guessIcon(meal)}.webp" alt="" draggable="false">`;
