@@ -1424,10 +1424,10 @@ function renderCalendar() {
     const key = iso(new Date(c.year, c.month, day));
     const info = c.days?.[key];
     const future = key > today && !(c.marks?.[key] === "predicted");
-    if (info) { logged++; total += info.calories; }
+    if (info && key !== today) { logged++; total += info.calories; } // today isn't finished, so it stays out of the average
     const goal = goalsOn(key)?.calories || 0;
     const dayGoal = goal + (info?.burned || 0);
-    const status = !info ? "" : goal ? (info.calories > dayGoal * 1.05 ? "over" : info.calories >= dayGoal * 0.85 ? "near" : "under") : "logged";
+    const status = !info ? "" : key === today ? "in-progress" : goal ? (info.calories > dayGoal * 1.05 ? "over" : info.calories >= dayGoal * 0.85 ? "near" : "under") : "logged";
     cells += `<button class="cal-cell ${status} ${key === today ? "today" : ""} ${key === state.date ? "picked" : ""}" data-action="cal-day" data-date="${key}" ${future ? "disabled" : ""}>
       <span class="num">${day}</span>${info ? `<span class="ck">${info.calories}</span>` : ""}${c.weights?.[key] ? `<span class="cw">⚖️${Number(c.weights[key]).toFixed(1)}</span>` : ""}${c.marks?.[key] ? `<i class="pdot ${c.marks[key]}"></i>` : ""}</button>`;
   }
@@ -1444,7 +1444,7 @@ function renderCalendar() {
         <button class="icon-btn" data-action="cal-month" data-step="1" aria-label="Next month" ${isThisMonth ? "disabled" : ""}>${ICON.next}</button>
       </div>
       <div class="cal-grid">${weekdays.map((w) => `<span class="cal-wd">${w}</span>`).join("")}${cells}</div>
-      ${c.days === null ? `<p class="empty-note">Loading…</p>` : `<p>${logged ? `${logged} day${logged > 1 ? "s" : ""} logged · average ${Math.round(total / logged)} kcal a day` : "Nothing logged this month yet."}</p>`}
+      ${c.days === null ? `<p class="empty-note">Loading…</p>` : `<p>${logged ? `${logged} finished day${logged > 1 ? "s" : ""} logged · average ${Math.round(total / logged)} kcal a day` : c.days?.[today] ? "Today is still going, so the average starts tomorrow." : "Nothing logged this month yet."}</p>`}
       ${state.goals ? `<div class="cal-legend"><span><i class="near"></i>Around your goal</span><span><i class="under"></i>Under</span><span><i class="over"></i>Over</span></div>` : ""}
     </section>
   </main>`;
