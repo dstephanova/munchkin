@@ -447,7 +447,8 @@ export async function testProvider(onStatus) {
 
 // turns: [{role:"user"|"model", text, photos?}]; the first photo goes with the first turn.
 // Step 1: chat (with web search). Step 2: a quick model turns the answer into numbers.
-export async function askAI(turns, photoDataUrl, { demo = false, onStatus = () => {}, meal = null } = {}) {
+export async function askAI(turns, photoDataUrl, { demo = false, onStatus = () => {}, meal = null, myFoods = [] } = {}) {
+  const saved = myFoods.length ? `\n\nThe person's saved foods. If they mention one (e.g. "my usual oats"), use THESE numbers instead of guessing, scaled to the amount they had:\n- ${myFoods.join("\n- ")}` : "";
   if (demo) return fakeChat(turns, photoDataUrl);
   const { engine, key, models } = await setup(onStatus);
 
@@ -457,7 +458,7 @@ export async function askAI(turns, photoDataUrl, { demo = false, onStatus = () =
   for (const [model, search] of plan) {
     onStatus(`${search ? "Asking" : "Asking without search,"} ${model}…`);
     try {
-      chat = await engine.chat(key, model, { system: CHAT_RULES + slotContext(meal), turns, photo: photoDataUrl, search, timeoutMs: search ? 60000 : 40000 });
+      chat = await engine.chat(key, model, { system: CHAT_RULES + slotContext(meal) + saved, turns, photo: photoDataUrl, search, timeoutMs: search ? 60000 : 40000 });
       chatModel = model;
       break;
     } catch (e) {
@@ -473,7 +474,7 @@ export async function askAI(turns, photoDataUrl, { demo = false, onStatus = () =
   const transcript = [...turns, { role: "model", text: reply }].slice(-12)
     .map((t) => `${t.role === "model" ? "Munchkin" : "Person"}: ${t.photo || t.photos?.length ? "(sent photos) " : ""}${t.text || (t.role === "model" ? "" : "(sent a photo)")}`).join("\n\n");
   const todayStr = new Date().toISOString().slice(0, 10);
-  const before = (meal && meal.items?.length ? `\n\nPrevious numbers (may be outdated): ${JSON.stringify({ name: meal.name, items: meal.items })}` : "") + (meal?.slot && !meal.askOnly ? `\n\nThis entry's meal: ${meal.slot}.` : "") + `\n\nToday's date: ${todayStr}.`;
+  const before = (meal && meal.items?.length ? `\n\nPrevious numbers (may be outdated): ${JSON.stringify({ name: meal.name, items: meal.items })}` : "") + (meal?.slot && !meal.askOnly ? `\n\nThis entry's meal: ${meal.slot}.` : "") + saved + `\n\nToday's date: ${todayStr}.`;
   let numbers = null;
   for (const model of [models.fast, chatModel].filter((m, i, a) => a.indexOf(m) === i)) {
     try {

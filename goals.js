@@ -74,22 +74,25 @@ export function exerciseBurn(met, minutes, kg) {
   return Math.max(0, Math.round((met - 1) * (kg || 65) * (minutes / 60)));
 }
 
-// Steps above what your chosen activity level already includes.
+// Steps a normal day has at each activity level. The activity level's calories already include these.
 const BASE_STEPS = { sedentary: 3000, light: 5000, moderate: 7000, active: 9000, very: 11000 };
-// "usual" = the person's own typical steps, learned from their recent days (null until known).
+export const levelSteps = (p) => BASE_STEPS[p?.activity] ?? 5000;
+const kcalPerStep = (p) => 0.04 * ((Number(p?.weight) || 65) / 70);
+
+// usual = your own normal steps (average of the last 7 days), or null in your first week.
+// - adjust: how much your real normal day differs from your activity level's normal (can be minus)
+// - burned: extra calories from steps above your normal, on this day
 export function stepsBurn(steps, p, usual = null) {
-  const kg = Number(p?.weight) || 65;
-  const base = usual ?? BASE_STEPS[p?.activity] ?? 4000;
-  const extra = Math.max(0, Number(steps) - base);
-  return { burned: Math.round(extra * 0.04 * (kg / 70)), base };
+  const level = levelSteps(p);
+  const base = usual ?? level;
+  const k = kcalPerStep(p);
+  const extra = Math.max(0, Number(steps || 0) - base);
+  return { burned: Math.round(extra * k), base, level, adjust: Math.round((base - level) * k) };
 }
 
-// Typical steps on normal days: the middle value of the last 14 days (excluding today),
-// once there are at least 7 days, so one big walking day doesn't throw it off.
+// Your normal day: the average of the last 7 days that have a step count (needs at least 5 of them).
 export function learnUsualSteps(days) {
-  const vals = days.filter((n) => n > 0).sort((a, b) => a - b);
-  if (vals.length < 7) return null;
-  const mid = Math.floor(vals.length / 2);
-  const median = vals.length % 2 ? vals[mid] : (vals[mid - 1] + vals[mid]) / 2;
-  return Math.round(median / 50) * 50;
+  const vals = days.filter((n) => Number.isFinite(n) && n >= 0).slice(-7);
+  if (vals.length < 5) return null;
+  return Math.round(vals.reduce((a, b) => a + b, 0) / vals.length / 50) * 50;
 }

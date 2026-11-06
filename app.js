@@ -2,10 +2,10 @@ import { openViewer } from "./viewer.js";
 import { readBarcode, lookupProduct, forGrams } from "./barcode.js";
 import { weightTrend, weeklyChange, cycleInfo, phaseOn, periodMarks, PHASE, addDays, dayNote } from "./body.js";
 import { catSVG } from "./cat.js";
-import { ACTIVITY, PACES, paceOf, paceOptions, safeMinimum, suggestGoals, KCAL_PER_KG, EXERCISES, EFFORT, exerciseBurn, stepsBurn, learnUsualSteps } from "./goals.js";
+import { ACTIVITY, PACES, paceOf, paceOptions, safeMinimum, suggestGoals, KCAL_PER_KG, EXERCISES, EFFORT, exerciseBurn, stepsBurn, learnUsualSteps, levelSteps } from "./goals.js";
 import { createStore } from "./store.js";
 import { createCat } from "./cat-rig.js";
-import { foodIcon, ICON_KEYS } from "./food-icons.js";
+import { foodIcon, guessIcon } from "./food-icons.js";
 import { askExercise, askAI, askBarcode, hasKey, loadAISettings, saveAISettings, testProvider, PROVIDERS } from "./ai.js";
 
 const demo = new URLSearchParams(location.search).has("demo");
@@ -211,6 +211,7 @@ function renderView() {
   if (state.view === "calendar") return renderCalendar();
   if (state.view === "barcode") return renderBarcode();
   if (state.view === "manual") return renderManual();
+  if (state.view === "myfoods") return renderMyFoods();
   if (state.view === "body") return renderBody();
   if (state.view === "cycle") return renderCycle();
   if (state.view === "meal") return renderMeal();
@@ -232,11 +233,18 @@ function renderLogin() {
 }
 
 const isMealDoc = (d) => !d.type || d.type === "meal";
+// What a day adds to (or takes from) the calorie goal:
+// - exercise you logged and steps above your normal day ("burned")
+// - adjust: your normal day vs your activity level's normal (minus if you usually walk less)
+// The normal day a day used is saved with its steps, so old days keep their own numbers.
 function dayBurn(docs) {
   const ex = docs.filter((d) => d.type === "exercise").reduce((n, d) => n + (d.burned || 0), 0);
   const st = docs.find((d) => d.type === "steps");
-  const sb = st ? stepsBurn(st.steps, state.goals?.profile, state.usualSteps).burned : 0;
-  return { exercise: ex, steps: sb, total: ex + sb };
+  const usual = st?.usual ?? state.usualSteps;
+  const sb = stepsBurn(st ? st.steps : 0, state.goals?.profile, usual);
+  const steps = st ? sb.burned : 0;
+  const adjust = usual != null ? sb.adjust : 0;
+  return { exercise: ex, steps, adjust, burned: ex + steps, total: ex + steps + adjust };
 }
 
 function renderDay() {
@@ -313,7 +321,7 @@ function bar(value, goal, cls = "") {
 }
 function summaryHTML(t, bubble, burn = { total: 0 }) {
   const g0 = goalsOn(state.date);
-  const g = g0 ? { ...g0, calories: g0.calories + burn.total } : null;
+  const g = g0 ? { ...g0, calories: Math.max(safeMinimum(state.goals?.profile || {}), g0.calories + burn.total) } : null;
   if (!g) {
     return `<section class="summary">
       <div class="cat-wrap" data-cat="day">${catPic()}</div>
@@ -346,10 +354,11 @@ function summaryHTML(t, bubble, burn = { total: 0 }) {
 function exerciseSectionHTML() {
   const ex = state.meals.filter((d) => d.type === "exercise").sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
   const st = state.meals.find((d) => d.type === "steps");
-  const sb = st ? stepsBurn(st.steps, state.goals?.profile, state.usualSteps) : null;
+  const usual = st?.usual ?? state.usualSteps;
+  const sb = st ? stepsBurn(st.steps, state.goals?.profile, usual) : null;
   const emoji = (k) => (EXERCISES.find((e) => e[0] === k)?.[1] || "✨").split(" ")[0];
   return `<section class="slot">
-    <div class="slot-head"><h2>Exercise</h2>${ex.length || sb?.burned ? `<span class="sum">🔥 ${dayBurn(state.meals).total} kcal</span>` : ""}</div>
+    <div class="slot-head"><h2>Exercise</h2>${ex.length || sb?.burned ? `<span class="sum">🔥 ${dayBurn(state.meals).burned} kcal</span>` : ""}</div>
     <div class="meal-list">
       ${ex.map((e) => state.confirmDeleteId === e.id
         ? `<div class="meal-card confirm-row"><span class="info"><span class="name">Delete “${esc(e.name)}”?</span></span>
@@ -363,7 +372,8 @@ function exerciseSectionHTML() {
         <label for="steps-input">👣 Steps</label>
         <input id="steps-input" type="number" inputmode="numeric" placeholder="${isNative() ? "syncing…" : "type your steps"}" value="${st ? esc(st.steps) : ""}" data-saved="${st ? esc(st.steps) : ""}">
         <button class="btn small" data-action="save-steps" id="steps-save" hidden>Save</button>
-        ${sb || st?.source ? `<span class="steps-note">${[st?.source ? "Synced from Google Fit" : "", sb ? (sb.burned ? `🔥 ${sb.burned} kcal extra` : "within your usual day") : ""].filter(Boolean).join(" · ")}</span>` : ""}
+        ${sb || st?.source ? `<span class="steps-note">${[st?.source ? "Synced from Google Fit" : "", sb ? (sb.burned ? `🔥 ${sb.burned} kcal extra` : "within your usual day") : ""].filter(Boolean).join(" · ")} <button class="info-btn" data-action="steps-info" aria-label="How steps count">ⓘ</button></span>` : ""}
+        ${state.stepsInfo ? `<span class="steps-note info">${stepsExplainHTML(usual)}</span>` : ""}
         ${lowStepsHint(st) ? `<span class="steps-note tip">Looks low? <button class="link-btn" data-action="hc-settings">Check Fit's sync</button></span>` : ""}
         ${state.health === "ask" ? `<button class="btn small" data-action="health-connect">Connect Google Fit</button>` : ""}
         ${state.health === "missing" ? `<span class="steps-note">Health Connect isn't on this phone. <button class="link-btn" data-action="health-store">Get it</button></span>` : ""}
@@ -373,6 +383,14 @@ function exerciseSectionHTML() {
       <button class="add-slot" data-action="open-ex">+ Add exercise</button>
     </div>
   </section>`;
+}
+
+function stepsExplainHTML(usual) {
+  const p = state.goals?.profile;
+  const level = levelSteps(p), lvl = (ACTIVITY.find((a) => a[0] === p?.activity) || ACTIVITY[1])[1];
+  const adj = stepsBurn(0, p, usual).adjust;
+  if (usual == null) return `Your first week: Munchkin expects about <strong>${level.toLocaleString()} steps</strong> a day (normal for “${lvl}”). Steps above that add to today's goal. After a week it learns your own normal.`;
+  return `Your normal day: about <strong>${usual.toLocaleString()} steps</strong> (average of the last 7 days). “${lvl}” expects ${level.toLocaleString()}, ${adj === 0 ? "so your goal stays the same" : `so your daily goal is <strong>${Math.abs(adj)} kcal ${adj < 0 ? "lower" : "higher"}</strong>`}. Steps above your normal add extra on that day.`;
 }
 
 // Late in the day with almost no steps usually means Google Fit stopped sharing them.
@@ -448,10 +466,10 @@ async function learnSteps() {
   const today = iso(new Date());
   if (stepsLearnedFor === today) return;
   try {
-    const docs = await store.getRange(shiftDate(today, -14), shiftDate(today, -1));
-    const usual = learnUsualSteps(docs.filter((d) => d.type === "steps").map((d) => Number(d.steps) || 0));
+    const docs = await store.getRange(shiftDate(today, -7), shiftDate(today, -1));
+    const usual = learnUsualSteps(docs.filter((d) => d.type === "steps").sort((a, b) => a.date.localeCompare(b.date)).map((d) => Number(d.steps) || 0));
     stepsLearnedFor = today;
-    if (usual !== state.usualSteps) { state.usualSteps = usual; if (state.view === "day" || state.view === "settings") render(); }
+    if (usual !== state.usualSteps) { state.usualSteps = usual; if (state.view === "day" || state.view === "settings") render(); refreshWeek(); }
   } catch { /* try again next time */ }
 }
 function refreshWeek() {
@@ -469,18 +487,19 @@ function refreshWeek() {
       const days = Object.values(byDay).filter((list) => list.some(isMealDoc));
       if (!days.length) { state.week = null; }
       else {
-        let eaten = 0, burn = 0;
+        let eaten = 0, burn = 0, adjust = 0;
         for (const list of days) {
           eaten += sumItems(list.filter(isMealDoc).flatMap((m) => m.items || [])).calories;
-          burn += dayBurn(list).total;
+          const b = dayBurn(list); burn += b.burned; adjust += b.adjust;
         }
-        const avg = Math.round(eaten / days.length), avgBurn = Math.round(burn / days.length);
+        const avg = Math.round(eaten / days.length), avgBurn = Math.round(burn / days.length), avgAdjust = Math.round(adjust / days.length);
         const daily = [...Array(7)].map((_, i) => {
           const date = shiftDate(start, i), list = byDay[date] || [];
           const logged = list.some(isMealDoc);
           return { date, kcal: logged ? sumItems(list.filter(isMealDoc).flatMap((m) => m.items || [])).calories : null, goal: (goalsOn(date)?.calories || 0) + dayBurn(list).total };
         });
-        state.week = { days: days.length, avg, burn: avgBurn, kgWeek: ((avg - avgBurn - maint) * 7) / KCAL_PER_KG, daily };
+        // your real upkeep = the Goals estimate, moved up or down by how much you really walk
+        state.week = { days: days.length, avg, burn: avgBurn, kgWeek: ((avg - avgBurn - avgAdjust - maint) * 7) / KCAL_PER_KG, daily };
       }
     } catch { state.week = null; }
     if (state.view === "day") render();
@@ -503,6 +522,7 @@ function sheetHTML() {
         <label class="big-action"><span class="ba-emoji">▥</span><span>Barcode</span><input type="file" id="pick-barcode" accept="image/*" capture="environment"></label>
         <button class="big-action" data-action="manual"><span class="ba-emoji">🔢</span><span>Manual</span></button>
       </div>
+      ${myFoodsQuickHTML()}
       <p class="help">Label: snap the nutrition table on the package. Barcode: snap the stripes, and Munchkin looks it up in a free food database.</p>
     </div>
   </div>`;
@@ -578,31 +598,120 @@ document.addEventListener("contextmenu", (e) => { if (drag.id) e.preventDefault(
 // a drop shouldn't also open the meal
 document.addEventListener("click", (e) => { if (Date.now() - drag.justDropped < 400) { e.preventDefault(); e.stopPropagation(); } }, true);
 
+// ---------- My foods: saved foods and products, added again in two taps ----------
+function myFoodsForAI() {
+  return (state.myFoods || []).slice(0, 25).map((f) => {
+    const t = f.kind === "product" ? f.per100 || {} : sumItems(f.items);
+    return `${f.name} (${f.kind === "product" ? "per 100 g" : "1 portion"}): ${Math.round(t.calories || 0)} kcal, P ${Math.round(t.protein || 0)}g, C ${Math.round(t.carbs || 0)}g, F ${Math.round(t.fat || 0)}g`;
+  });
+}
+async function loadMyFoods() {
+  if (!store) return;
+  try {
+    const [foods, products] = await Promise.all([store.listType("food"), store.listType("product")]);
+    state.myFoods = [
+      ...foods.map((d) => ({ id: d.id, kind: "food", name: d.name, icon: d.icon, photo: d.photo || null, items: d.items || [], uses: d.uses || 0, lastUsed: d.lastUsed || 0, raw: d })),
+      ...products.map((d) => ({ id: d.id, kind: "product", name: [d.brand, d.name].filter(Boolean).join(" ").trim() || d.name, icon: null, photo: d.image || null, per100: d.per100, packGrams: d.packGrams || null, uses: d.uses || 0, lastUsed: d.lastUsed || d.updatedAt || 0, raw: d })),
+    ].sort((a, b) => (b.uses - a.uses) || (b.lastUsed - a.lastUsed));
+  } catch { state.myFoods = state.myFoods || []; }
+  if (["myfoods", "meal"].includes(state.view) || state.sheet) render();
+}
+const r1 = (x) => Math.round(x * 10) / 10;
+function foodItems(f, amt) {
+  if (f.kind === "product") {
+    const g = Math.max(1, Math.round(amt)), k = g / 100, p = f.per100 || {};
+    return [{ name: f.name, amount: `${g} g`, calories: Math.round((p.calories || 0) * k), protein: r1((p.protein || 0) * k), carbs: r1((p.carbs || 0) * k), fat: r1((p.fat || 0) * k) }];
+  }
+  return f.items.map((it) => ({ ...it, amount: amt === 1 ? it.amount : `${amt} × ${it.amount || "portion"}`, calories: Math.round((it.calories || 0) * amt), protein: r1((it.protein || 0) * amt), carbs: r1((it.carbs || 0) * amt), fat: r1((it.fat || 0) * amt) }));
+}
+const defaultAmt = (f) => f.kind === "product" ? (f.packGrams || 100) : 1;
+async function addFromFood(f, amt, slot) {
+  const items = foodItems(f, amt);
+  const meal = { id: store.newId(), date: state.date, slot: slot || state.sheetSlot || defaultSlot(), name: f.name, icon: f.icon || guessIcon({ name: f.name, items }), photo: f.photo || null,
+    items, fromFood: f.id, chat: [], createdAt: Date.now(), updatedAt: Date.now() };
+  await saveMeal(meal);
+  pendingMood = "munch";
+  store.save({ ...f.raw, id: f.id, uses: (f.uses || 0) + 1, lastUsed: Date.now() }).then(loadMyFoods).catch(() => {});
+  toast(`Added ${sumItems(items).calories} kcal to ${SLOT_NAME[meal.slot].toLowerCase()} 🐱`);
+}
+async function saveFood(m) {
+  const id = `food-${store.newId()}`;
+  await store.save({ id, type: "food", name: m.name, icon: guessIcon(m), photo: m.photo || null, items: m.items, uses: 1, lastUsed: Date.now(), createdAt: Date.now(), updatedAt: Date.now() });
+  return id;
+}
+function myFoodsQuickHTML() {
+  const top = (state.myFoods || []).slice(0, 4);
+  return `<div class="mf-quick">
+    <button class="chip mf-all" data-action="myfoods">⭐ My foods</button>
+    ${top.map((f) => `<button class="chip" data-action="food-quick" data-id="${esc(f.id)}" title="Add ${esc(f.name)}">${esc(f.name.length > 18 ? f.name.slice(0, 17) + "…" : f.name)}</button>`).join("")}
+  </div>`;
+}
+function renderMyFoods() {
+  const q = (state.foodSearch || "").trim().toLowerCase();
+  const list = (state.myFoods || []).filter((f) => !q || f.name.toLowerCase().includes(q));
+  const open = state.foodOpen ? (state.myFoods || []).find((f) => f.id === state.foodOpen) : null;
+  const amt = state.foodAmt ?? (open ? defaultAmt(open) : 1);
+  const row = (f) => {
+    const kcal = sumItems(foodItems(f, defaultAmt(f))).calories;
+    const thumb = f.photo ? `<img src="${esc(f.photo)}" alt="">` : foodIcon({ name: f.name, icon: f.icon, items: f.items });
+    const head = `<button class="mf-row" data-action="food-open" data-id="${esc(f.id)}"><span class="thumb food-icon">${thumb}</span>
+      <span class="mf-info"><strong>${esc(f.name)}</strong><small>${f.kind === "product" ? `${kcal} kcal · ${defaultAmt(f)} g` : `${kcal} kcal a portion`}${f.uses > 2 ? " · you often have this" : ""}</small></span></button>`;
+    if (!open || open.id !== f.id) return `<li>${head}</li>`;
+    const items = foodItems(f, amt), t = sumItems(items);
+    const amts = f.kind === "product"
+      ? [...new Set([100, f.packGrams].filter(Boolean))].map((g) => `<button class="chip" data-action="food-amt" data-v="${g}" aria-pressed="${amt === g}">${g} g${g === f.packGrams && g !== 100 ? " (pack)" : ""}</button>`).join("") + `<input id="mf-grams" type="number" inputmode="numeric" min="1" value="${amt}" aria-label="Grams"> g`
+      : [0.5, 1, 1.5, 2].map((v) => `<button class="chip" data-action="food-amt" data-v="${v}" aria-pressed="${amt === v}">${v === 0.5 ? "½" : v === 1.5 ? "1½" : v}</button>`).join("");
+    return `<li class="open">${head}
+      <div class="mf-panel">
+        <div class="chips">${amts}</div>
+        <div class="chips">${SLOTS.map(([id, label]) => `<button class="chip" data-action="sheet-slot" data-slot="${id}" aria-pressed="${state.sheetSlot === id}">${label}</button>`).join("")}</div>
+        <p class="mf-total"><strong>${t.calories} kcal</strong> · P ${Math.round(t.protein)}g · C ${Math.round(t.carbs)}g · F ${Math.round(t.fat)}g</p>
+        <div class="btn-row"><button class="btn" data-action="food-add">Add to ${SLOT_NAME[state.sheetSlot || defaultSlot()].toLowerCase()}</button>
+          <button class="btn ghost small" data-action="food-edit">Edit</button>
+          ${state.foodDelete === f.id ? `<button class="btn danger small" data-action="food-del">Delete for good?</button>` : `<button class="btn ghost small" data-action="food-del">Delete</button>`}</div>
+      </div></li>`;
+  };
+  $app.innerHTML = `
+  <main class="screen">
+    <header class="topbar">
+      <button class="icon-btn" data-action="back" aria-label="Back">${ICON.back}</button>
+      <h1>⭐ My foods</h1>
+    </header>
+    <div class="field"><input id="mf-search" type="search" placeholder="Search your foods" value="${esc(state.foodSearch || "")}" aria-label="Search your foods"></div>
+    ${list.length ? `<ul class="mf-list">${list.map(row).join("")}</ul>`
+      : `<section class="card"><p>${q ? "Nothing with that name yet." : "No saved foods yet. Open any meal and tap <strong>⭐ Save to My foods</strong>, or tick it on the Manual page. Products you scan by barcode show up here by themselves."}</p></section>`}
+  </main>`;
+}
+
 // ---------- typing the numbers yourself (no AI) ----------
 function renderManual() {
   const f = state.manual || {};
+  const mode = f.mode || "meal"; // meal: add to the diary · food / product: edit a saved food
   const num = (id, label, unit) => `<div class="field"><label for="mn-${id}">${label} (${unit})</label><input id="mn-${id}" type="number" inputmode="decimal" min="0" value="${esc(f[id] ?? "")}" placeholder="0"></div>`;
   $app.innerHTML = `
   <main class="screen">
     <header class="topbar">
       <button class="icon-btn" data-action="back" aria-label="Back">${ICON.back}</button>
-      <h1>Manual</h1>
+      <h1>${mode === "meal" ? "Manual" : "Edit saved food"}</h1>
     </header>
     <section class="card">
       <div class="field"><label for="mn-name">Name</label><input id="mn-name" type="text" maxlength="60" value="${esc(f.name || "")}" placeholder="e.g. Protein bar"></div>
+      ${mode === "product" ? `<p class="help">Numbers per 100 g, as on the label.</p>` : mode === "food" ? `<p class="help">Numbers for one portion.</p>` : ""}
       <div class="field-row two">${num("calories", "Calories", "kcal")}${num("protein", "Protein", "g")}</div>
       <div class="field-row two">${num("carbs", "Carbs", "g")}${num("fat", "Fat", "g")}</div>
-      <div class="field"><label>Meal</label>
+      ${mode === "meal" ? `<div class="field"><label>Meal</label>
         <div class="chips">${SLOTS.map(([id, label]) => `<button class="chip" data-action="manual-slot" data-slot="${id}" aria-pressed="${state.sheetSlot === id}">${label}</button>`).join("")}</div>
       </div>
+      <label class="toggle"><input type="checkbox" id="mn-keep" ${f.keep ? "checked" : ""}><span>⭐ Also save to My foods</span></label>
       <p id="mn-check" class="help">Only calories are needed. Leave the rest empty if you don't know them.</p>
-      <div class="btn-row"><button class="btn" data-action="manual-save">Add to ${prettyDate(state.date).toLowerCase()}</button></div>
+      <div class="btn-row"><button class="btn" data-action="manual-save">Add to ${prettyDate(state.date).toLowerCase()}</button></div>`
+      : `<div class="btn-row"><button class="btn" data-action="manual-save">Save</button></div>`}
     </section>
   </main>`;
 }
 function readManual() {
   const v = (id) => document.getElementById(`mn-${id}`)?.value ?? "";
-  state.manual = { name: v("name"), calories: v("calories"), protein: v("protein"), carbs: v("carbs"), fat: v("fat") };
+  state.manual = { ...(state.manual || {}), name: v("name"), calories: v("calories"), protein: v("protein"), carbs: v("carbs"), fat: v("fat"), keep: !!document.getElementById("mn-keep")?.checked };
   return state.manual;
 }
 
@@ -664,6 +773,7 @@ function renderMeal() {
       <div class="row"><span class="kcal">${m.estimate ? "≈" : ""}${t.calories}<small> kcal</small></span>${m.estimate ? `<span class="estimate">estimate, pick your option below</span>` : ""}</div>
       ${macrosHTML(t)}
       ${m.askOnly ? `<div class="btn-row"><button class="btn" data-action="ask-add">+ Add to today's ${SLOT_NAME[m.slot].toLowerCase()}</button></div>` : ""}
+      ${!m.askOnly && !m._draft && !m.fromFood ? `<div class="btn-row">${state.myFoods?.some((f) => f.id === m.savedFoodId) ? `<span class="saved-food">⭐ In My foods</span>` : `<button class="btn ghost small" data-action="save-food">⭐ Save to My foods</button>`}</div>` : ""}
       <ul class="items">${m.items.map((it) => `<li><span>${esc(it.name)} <em>${esc(it.amount)}</em></span><span>${it.calories} kcal</span></li>`).join("")}</ul>
     </section>` : ""}
     ${m.photo && !(firstTime && !m.photoFromChat) ? `<button class="meal-photo" data-action="view-photo" data-src="${esc(m.photo)}" aria-label="Open photo full screen"><img src="${esc(m.photo)}" alt="Your meal photo"></button>` : ""}
@@ -730,7 +840,7 @@ function renderSettings() {
     <section class="card">
       <h2>Daily goals</h2>
       ${state.goals ? `<p>${state.goals.calories} kcal · protein ${state.goals.protein} g · carbs ${state.goals.carbs} g · fat ${state.goals.fat} g</p>` : `<p>Not set yet. Munchkin can work them out for you.</p>`}
-      <p>${state.usualSteps ? `Your usual: about <strong>${state.usualSteps.toLocaleString()} steps a day</strong>, learned from your last 2 weeks. Steps above that count as extra calories burned.` : "Munchkin learns your usual steps after about a week of step counts. Until then it uses the usual for your activity level."}</p>
+      <p>${stepsExplainHTML(state.usualSteps)}</p>
       <div class="btn-row"><button class="btn" data-action="goals">${state.goals ? "Change my goals" : "Set my goals"}</button></div>
     </section>
     ${isNative() ? "" : `<section class="card">
@@ -1016,7 +1126,7 @@ async function applyHealthLink() {
   try { data = JSON.parse(sessionStorage.getItem("munchkin.health") || "null"); sessionStorage.removeItem("munchkin.health"); } catch {}
   if (!data || !/^\d{4}-\d{2}-\d{2}$/.test(data.date || "") || data.date > iso(new Date())) return;
   try {
-    await store.save({ id: `steps-${data.date}`, type: "steps", date: data.date, steps: data.steps, active: data.active, source: "Google Fit", createdAt: Date.now(), updatedAt: Date.now() });
+    await store.save({ id: `steps-${data.date}`, type: "steps", date: data.date, steps: data.steps, active: data.active, usual: state.usualSteps ?? null, source: "Google Fit", createdAt: Date.now(), updatedAt: Date.now() });
     toast(`👣 ${data.steps.toLocaleString()} steps synced from Health Connect`);
   } catch { toast("Couldn't save your steps. Try again."); }
 }
@@ -1049,7 +1159,7 @@ async function syncHealth(ask = false) {
     const date = iso(now), id = `steps-${date}`;
     const existing = state.date === date ? state.meals.find((d) => d.id === id) : null;
     if (existing && existing.steps === steps) return;
-    await store.save({ id, type: "steps", date, steps, active, source: "Google Fit", createdAt: existing?.createdAt || Date.now(), updatedAt: Date.now() });
+    await store.save({ id, type: "steps", date, steps, active, usual: existing?.usual ?? (date === iso(new Date()) ? state.usualSteps ?? null : null), source: "Google Fit", createdAt: existing?.createdAt || Date.now(), updatedAt: Date.now() });
   } catch (e) {
     state.health = "error"; state.healthError = String(e?.message || e).slice(0, 140);
     if (state.view === "day") render();
@@ -1482,7 +1592,7 @@ function back() {
   else go("day");
 }
 window.addEventListener("popstate", () => {
-  if (["meal", "settings", "goals", "calendar", "barcode", "body", "cycle", "manual"].includes(state.view)) {
+  if (["meal", "settings", "goals", "calendar", "barcode", "body", "cycle", "manual", "myfoods"].includes(state.view)) {
     state.settingsStatus = null;
     go("day");
   }
@@ -1719,7 +1829,7 @@ async function runAI() {
   render(); scrollToEnd(); setAIStatus("Thinking…");
   try {
     const turns = m.chat.slice(-24);
-    const res = await askAI(turns, m.chat.length <= 24 && !m.photoFromChat ? m.photo : null, { demo, onStatus: setAIStatus, meal: { name: m.name, items: m.items, slot: m.slot, askOnly: !!m.askOnly } });
+    const res = await askAI(turns, m.chat.length <= 24 && !m.photoFromChat ? m.photo : null, { demo, onStatus: setAIStatus, meal: { name: m.name, items: m.items, slot: m.slot, askOnly: !!m.askOnly }, myFoods: myFoodsForAI() });
     stopAIStatus();
     m.chat.push({ role: "model", text: res.reply, sources: res.sources || [], questions: res.questions || [] });
     state.answers = {};
@@ -1902,7 +2012,7 @@ $app.addEventListener("click", async (ev) => {
     const v = Math.round(Number(document.getElementById("steps-input")?.value) || 0);
     const id = `steps-${state.date}`;
     try {
-      if (v > 0) await store.save({ id, type: "steps", date: state.date, steps: v, createdAt: Date.now(), updatedAt: Date.now() });
+      if (v > 0) await store.save({ id, type: "steps", date: state.date, steps: v, usual: state.usualSteps ?? null, createdAt: Date.now(), updatedAt: Date.now() });
       else await store.remove(id);
       toast(v > 0 ? `👣 ${v.toLocaleString()} steps saved` : "Steps cleared");
     } catch { toast("Couldn't save. Try again."); }
@@ -1964,8 +2074,39 @@ $app.addEventListener("click", async (ev) => {
     if (v && (v < 30 || v > 300)) { toast("That goal weight looks off. Try again."); return; }
     try { await store.saveGoals({ ...state.goals, profile: { ...state.goals.profile, goalWeight: v || "" }, updatedAt: Date.now() }); toast(v ? `🎯 Goal set: ${v} kg` : "Goal weight removed"); }
     catch { toast("Couldn't save. Try again."); }
+  } else if (a === "steps-info") {
+    state.stepsInfo = !state.stepsInfo; const y = window.scrollY; render(); window.scrollTo(0, y);
   } else if (a === "week-info") {
     state.weekInfo = !state.weekInfo; const y = window.scrollY; render(); window.scrollTo(0, y);
+  } else if (a === "myfoods") {
+    state.sheet = false; state.foodOpen = null; state.foodAmt = null; state.foodDelete = null; state.foodSearch = "";
+    go("myfoods"); loadMyFoods();
+  } else if (a === "food-quick") {
+    const f = (state.myFoods || []).find((x) => x.id === el.dataset.id);
+    if (f) { state.sheet = false; render(); try { await addFromFood(f, defaultAmt(f)); } catch { toast("Couldn't add it. Try again."); } }
+  } else if (a === "food-open") {
+    state.foodOpen = state.foodOpen === el.dataset.id ? null : el.dataset.id; state.foodAmt = null; state.foodDelete = null; render();
+  } else if (a === "food-amt") {
+    state.foodAmt = Number(el.dataset.v); render();
+  } else if (a === "food-add") {
+    const f = (state.myFoods || []).find((x) => x.id === state.foodOpen);
+    if (!f) return;
+    const amt = f.kind === "product" ? Number(document.getElementById("mf-grams")?.value) || defaultAmt(f) : (state.foodAmt ?? 1);
+    try { await addFromFood(f, amt); back(); } catch { toast("Couldn't add it. Try again."); }
+  } else if (a === "food-edit") {
+    const f = (state.myFoods || []).find((x) => x.id === state.foodOpen);
+    if (!f) return;
+    const t = f.kind === "product" ? f.per100 || {} : sumItems(f.items);
+    state.manual = { mode: f.kind, editId: f.id, name: f.name, calories: t.calories, protein: Math.round(t.protein || 0), carbs: Math.round(t.carbs || 0), fat: Math.round(t.fat || 0) };
+    go("manual");
+  } else if (a === "food-del") {
+    if (state.foodDelete !== state.foodOpen) { state.foodDelete = state.foodOpen; render(); return; }
+    try { await store.remove(state.foodOpen); toast("Deleted from My foods"); state.foodOpen = null; state.foodDelete = null; await loadMyFoods(); }
+    catch { toast("Couldn't delete. Try again."); }
+  } else if (a === "save-food") {
+    const m = state.meal; if (!m?.items?.length) return;
+    try { m.savedFoodId = await saveFood(m); await saveMeal(m); toast("⭐ Saved to My foods"); await loadMyFoods(); }
+    catch { toast("Couldn't save. Try again."); }
   } else if (a === "manual") {
     state.sheet = false; state.manual = {}; go("manual");
     setTimeout(() => document.getElementById("mn-name")?.focus(), 50);
@@ -1977,10 +2118,23 @@ $app.addEventListener("click", async (ev) => {
     const name = (f.name || "").trim();
     if (!name) { toast("Give it a name first."); document.getElementById("mn-name")?.focus(); return; }
     if (!n(f.calories)) { toast("How many calories?"); document.getElementById("mn-calories")?.focus(); return; }
+    if (f.mode === "food" || f.mode === "product") {
+      const food = (state.myFoods || []).find((x) => x.id === f.editId);
+      if (!food) { back(); return; }
+      const nums = { calories: n(f.calories), protein: n(f.protein), carbs: n(f.carbs), fat: n(f.fat) };
+      const next = f.mode === "product" ? { ...food.raw, name: name.slice(0, 60), brand: "", per100: nums, updatedAt: Date.now() }
+        : { ...food.raw, name: name.slice(0, 60), items: [{ name: name.slice(0, 60), amount: "1 portion", ...nums }], updatedAt: Date.now() };
+      try { await store.save({ ...next, id: food.id }); toast("Saved"); state.manual = null; await loadMyFoods(); back(); }
+      catch { toast("Couldn't save. Try again."); }
+      return;
+    }
     const meal = { id: store.newId(), date: state.date, slot: state.sheetSlot || defaultSlot(), name: name.slice(0, 60), photo: null, manual: true,
       items: [{ name: name.slice(0, 60), amount: "", calories: n(f.calories), protein: n(f.protein), carbs: n(f.carbs), fat: n(f.fat) }],
       chat: [], createdAt: Date.now(), updatedAt: Date.now() };
-    try { await saveMeal(meal); pendingMood = "munch"; toast(`Added to ${SLOT_NAME[meal.slot].toLowerCase()} 🐱`); state.manual = null; back(); }
+    try {
+      if (f.keep) { meal.savedFoodId = await saveFood(meal); loadMyFoods(); }
+      await saveMeal(meal); pendingMood = "munch"; toast(`Added to ${SLOT_NAME[meal.slot].toLowerCase()} 🐱${f.keep ? " · ⭐ saved" : ""}`); state.manual = null; back();
+    }
     catch { toast("Couldn't save. Try again."); }
   } else if (a === "type-meal") {
     state.sheet = false;
@@ -2174,6 +2328,11 @@ $app.addEventListener("input", (ev) => {
     const chk = document.getElementById("g-check"); if (chk) chk.textContent = macroCheck();
     return;
   }
+  if (ev.target.id === "mf-search") {
+    state.foodSearch = ev.target.value; const pos = ev.target.selectionStart; render();
+    const box = document.getElementById("mf-search"); box?.focus(); try { box?.setSelectionRange(pos, pos); } catch {}
+    return;
+  }
   if (ev.target.id === "steps-input") {
     const btn = document.getElementById("steps-save");
     if (btn) btn.hidden = ev.target.value.trim() === "" || ev.target.value === ev.target.dataset.saved;
@@ -2228,6 +2387,7 @@ async function start() {
     loadBody().then(() => syncCycle());
     restoreOpen();
     setTimeout(deliverRestoredPhoto, 50);
+    loadMyFoods();
     unsubGoals = store.watchGoals((g) => { state.goals = g; state.cycle && null; if (["day", "settings", "body"].includes(state.view)) render(); refreshWeek(); });
     render();
   });

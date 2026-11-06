@@ -82,6 +82,10 @@ async function firebaseStore() {
       await fs.setDoc(fs.doc(mealsCol(), id), data);
     },
     async remove(id) { await fs.deleteDoc(fs.doc(mealsCol(), id)); },
+    async listType(type) {
+      const snap = await fs.getDocs(fs.query(mealsCol(), fs.where("type", "==", type)));
+      return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    },
     async getRange(start, end) {
       const q = fs.query(mealsCol(), fs.where("date", ">=", start), fs.where("date", "<=", end));
       const snap = await fs.getDocs(q);
@@ -144,6 +148,7 @@ function memoryStore() {
     async save(meal) { meals.set(meal.id, structuredClone(meal)); notify(); },
     async remove(id) { meals.delete(id); notify(); },
     async getRange(start, end) { return [...meals.values()].filter((m) => m.date >= start && m.date <= end); },
+    async listType(type) { return [...meals.values()].filter((m) => m.type === type).map((m) => structuredClone(m)); },
     watchGoals(cb) { goalWatchers.add(cb); cb(goals); return () => goalWatchers.delete(cb); },
     async getKeys() { return null; },
     async saveKeys() {},
