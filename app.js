@@ -2,7 +2,7 @@ import { openViewer } from "./viewer.js";
 import { readBarcode, lookupProduct, forGrams } from "./barcode.js";
 import { weightTrend, weeklyChange, cycleInfo, phaseOn, periodMarks, PHASE, addDays, dayNote } from "./body.js";
 import { catSVG } from "./cat.js";
-import { ACTIVITY, PACES, paceOf, paceOptions, safeMinimum, suggestGoals, KCAL_PER_KG, EXERCISES, EFFORT, exerciseBurn, stepsBurn, learnUsualSteps, levelSteps } from "./goals.js";
+import { ACTIVITY, PACES, paceOf, paceOptions, safeMinimum, suggestGoals, KCAL_PER_KG, EXERCISES, EFFORT, exerciseBurn, stepsBurn, learnUsualSteps, levelSteps, GOAL_RULES, levelFromMovement } from "./goals.js";
 import { createStore } from "./store.js";
 import { createCat } from "./cat-rig.js";
 import { foodIcon, guessIcon } from "./food-icons.js";
@@ -1245,6 +1245,14 @@ async function loadBody() {
     for (const d of docs) if (d.date >= shiftDate(today, -6) && (d.type === "steps" || d.type === "exercise")) (byDay[d.date] ||= []).push(d);
     const days = [...Array(7)].map((_, i) => shiftDate(today, -6 + i)).map((date) => ({ date, ...dayBurn(byDay[date] || []) }));
     state.bonus = { today: days[6], week: days.reduce((n, d) => n + d.burned, 0), days };
+    const recent = docs.filter((d) => d.date >= shiftDate(today, -14) && d.date < today);
+    const stepDocs = recent.filter((d) => d.type === "steps");
+    state.movement = {
+      stepDays: stepDocs.length,
+      avgSteps: stepDocs.length ? Math.round(stepDocs.reduce((n, d) => n + (Number(d.steps) || 0), 0) / stepDocs.length) : 0,
+      exMinPerDay: recent.filter((d) => d.type === "exercise").reduce((n, d) => n + (Number(d.minutes) || 0), 0) / 14,
+      workouts: recent.filter((d) => d.type === "exercise").length,
+    };
     // every finished, logged day: what your body used (upkeep + bonus) minus what you ate
     const perDay = {};
     for (const d of docs) if (d.date < today) (perDay[d.date] ||= []).push(d);
@@ -1264,17 +1272,19 @@ async function loadBody() {
 let autoGoalsBusy = false;
 async function autoGoalsFromWeight() {
   const g = state.goals, w = state.body?.weights;
-  if (autoGoalsBusy || !g?.profile || !w?.length || g.profile.autoWeight === false) return;
-  const trend = Math.round(w[w.length - 1].trend * 10) / 10;
-  if (Math.abs(trend - Number(g.profile.weight)) < 0.5) return;
-  const profile = { ...g.profile, weight: trend };
+  if (autoGoalsBusy || !g?.profile) return;
+  const trend = w?.length ? Math.round(w[w.length - 1].trend * 10) / 10 : Number(g.profile.weight);
+  const moved = w?.length && g.profile.autoWeight !== false && Math.abs(trend - Number(g.profile.weight)) >= 0.5;
+  const newRules = (g.rules || 1) < GOAL_RULES; // e.g. protein now follows your activity level
+  if (!moved && !newRules) return;
+  const profile = { ...g.profile, weight: moved ? trend : g.profile.weight };
   const sug = suggestGoals(profile);
   if (!sug) return;
   const edited = new Set(g.edited || []);
-  const next = { ...g, profile, maintenance: sug.maintenance || g.maintenance, updatedAt: Date.now() };
+  const next = { ...g, profile, maintenance: sug.maintenance || g.maintenance, rules: GOAL_RULES, updatedAt: Date.now() };
   for (const k of ["calories", "protein", "carbs", "fat"]) if (!edited.has(k)) next[k] = sug[k];
   autoGoalsBusy = true;
-  try { await saveGoalsKeepingHistory(next); toast(`🎯 Goals updated for your trend of ${trend} kg`); }
+  try { await saveGoalsKeepingHistory(next); toast(moved ? `🎯 Goals updated for your trend of ${trend} kg` : `🎯 Protein now fits your activity level: ${next.protein} g`); }
   catch { /* try again next time */ }
   finally { autoGoalsBusy = false; }
 }
@@ -1334,6 +1344,23 @@ function lostCardHTML() {
     ${earlier.length ? `<div class="runs-earlier"><small>Earlier</small>${earlier.map((e, i) => `<p class="run-line">${runRange(e)}: ${e.net >= 0 ? "−" : "+"}${Math.abs(e.net).toLocaleString()} kcal (≈ ${kgFat(e.net)} kg) ${i === 0 && e.end ? `<button class="link-btn" data-action="run-join" data-date="${runs[runs.length - 1].start}" data-prev="${e.end}">Join with the next</button>` : ""}</p>`).join("")}</div>` : ""}
     <div class="btn-row">${state.runFreshAsk ? `<span class="mf-ask">Start counting from today? <button class="btn danger small" data-action="run-fresh">Yes</button><button class="btn ghost small" data-action="run-fresh-no">No</button></span>` : `<button class="btn ghost small" data-action="run-fresh-ask">Start fresh</button>`}</div>
   </section>`;
+}
+// Suggest a different activity level when your last 2 weeks clearly fit one (never switches by itself)
+function levelSuggestHTML() {
+  const mv = state.movement, p = state.goals?.profile;
+  if (!mv || !p || mv.stepDays < 10) return "";
+  const fits = levelFromMovement(mv.avgSteps, mv.exMinPerDay);
+  if (fits === p.activity) return "";
+  let snoozed = null;
+  try { snoozed = localStorage.getItem("munchkin.levelSnooze"); } catch {}
+  if (snoozed && snoozed > iso(new Date())) return "";
+  const name = (k) => (ACTIVITY.find((a) => a[0] === k) || [, k])[1];
+  const order = ACTIVITY.map((a) => a[0]);
+  const more = order.indexOf(fits) > order.indexOf(p.activity);
+  const wk = Math.round(mv.workouts / 2);
+  return `<div class="notice soft level-suggest"><p>You've been ${more ? "more" : "less"} active than “${esc(name(p.activity))}” lately (about ${mv.avgSteps.toLocaleString()} steps a day${wk ? `, ${wk} workout${wk === 1 ? "" : "s"} a week` : ""}). Switch to <strong>${esc(name(fits))}</strong>?</p>
+    <p class="help">This changes your calories and protein to match. Munchkin never switches by itself.</p>
+    <div class="btn-row"><button class="btn small" data-action="level-switch" data-level="${fits}">Switch</button><button class="btn ghost small" data-action="level-snooze">Not now</button></div></div>`;
 }
 function bonusCardHTML() {
   const b = state.bonus;
@@ -1485,6 +1512,7 @@ function renderBody() {
       <p class="help">Morning weigh-ins compare best: after the toilet, before eating or drinking, same scale.</p>
       ${showTip ? `<p class="help tip">Today's weigh-in was later in the day, so it may read 0.5–1.5 kg higher from food and drinks.</p>` : ""}
     </section>
+    ${levelSuggestHTML()}
     ${lostCardHTML()}
     ${bonusCardHTML()}
     <section class="card">
@@ -2163,7 +2191,7 @@ $app.addEventListener("click", async (ev) => {
     const p = { ...f.profile };
     try {
       const sug = suggestGoals(p);
-      await saveGoalsKeepingHistory({ ...t, maintenance: sug?.maintenance || null, profile: p, edited: [...f.edited], updatedAt: Date.now() });
+      await saveGoalsKeepingHistory({ ...t, maintenance: sug?.maintenance || null, profile: p, edited: [...f.edited], rules: GOAL_RULES, updatedAt: Date.now() });
       toast("Goals saved 🎯");
       back();
     } catch { toast("Couldn't save. Check your internet and try again."); }
@@ -2187,6 +2215,17 @@ $app.addEventListener("click", async (ev) => {
     if (v && (v < 30 || v > 300)) { toast("That goal weight looks off. Try again."); return; }
     try { await store.saveGoals({ ...state.goals, profile: { ...state.goals.profile, goalWeight: v || "" }, updatedAt: Date.now() }); toast(v ? `🎯 Goal set: ${v} kg` : "Goal weight removed"); }
     catch { toast("Couldn't save. Try again."); }
+  } else if (a === "level-switch") {
+    const g = state.goals; if (!g?.profile) return;
+    const profile = { ...g.profile, activity: el.dataset.level };
+    const sug = suggestGoals(profile);
+    const edited = new Set(g.edited || []);
+    const next = { ...g, profile, maintenance: sug?.maintenance || g.maintenance, rules: GOAL_RULES, updatedAt: Date.now() };
+    if (sug) for (const k of ["calories", "protein", "carbs", "fat"]) if (!edited.has(k)) next[k] = sug[k];
+    try { await saveGoalsKeepingHistory(next); toast(`Switched to ${(ACTIVITY.find((x) => x[0] === el.dataset.level) || [, ""])[1]} 💪`); } catch { toast("Couldn't save. Try again."); }
+  } else if (a === "level-snooze") {
+    try { localStorage.setItem("munchkin.levelSnooze", shiftDate(iso(new Date()), 7)); } catch {}
+    render();
   } else if (a === "run-join") {
     const d = el.dataset.date;
     const prevEnd = el.dataset.prev || "";

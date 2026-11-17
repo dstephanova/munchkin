@@ -41,6 +41,22 @@ export function paceOptions(p) {
   });
 }
 
+// Protein per kg of body weight: more for more active days, a bit more while losing or gaining
+// (helps keep muscle and keeps you full).
+const PROTEIN = { sedentary: [1.2, 1.4], light: [1.4, 1.6], moderate: [1.6, 1.8], active: [1.8, 2.0], very: [2.0, 2.2] };
+export function proteinPerKg(activity, kgWeek) {
+  const [keep, change] = PROTEIN[activity] || PROTEIN.light;
+  return kgWeek === 0 ? keep : change;
+}
+export const GOAL_RULES = 2; // bump when the way goals are worked out changes
+
+// What your real movement looks like: steps a day plus logged exercise (1 minute ≈ 100 steps).
+const LEVELS = [["sedentary", 4000], ["light", 6000], ["moderate", 8000], ["active", 10000], ["very", Infinity]];
+export function levelFromMovement(avgSteps, exerciseMinPerDay) {
+  const score = (avgSteps || 0) + (exerciseMinPerDay || 0) * 100;
+  return LEVELS.find(([, max]) => score < max)[0];
+}
+
 export function suggestGoals(p) {
   const tdee = maintenanceOf(p);
   if (!tdee) return null;
@@ -48,7 +64,7 @@ export function suggestGoals(p) {
   let opt = opts.find((o) => o.id === paceOf(p)) || opts.find((o) => o.id === "keep");
   let cal = opt.tooLow ? Math.round(safeMinimum(p) / 10) * 10 : opt.calories;
   const w = Number(p.weight);
-  let protein = Math.round(w * (opt.kgWeek === 0 ? 1.4 : 1.8));
+  let protein = Math.round(w * proteinPerKg(p.activity, opt.kgWeek));
   protein = Math.min(protein, Math.round((cal * 0.35) / 4));
   const fat = Math.round((cal * 0.28) / 9);
   const carbs = Math.max(0, Math.round((cal - protein * 4 - fat * 9) / 4));
