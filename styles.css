@@ -757,3 +757,11 @@ body.dragging { overflow: hidden; }
 .mf-total strong { color: var(--ink); }
 .saved-food { color: var(--accent-deep); font-weight: 800; font-size: .9rem; }
 #mf-search { width: 100%; border: 2px solid var(--line); background: var(--surface-2); border-radius: 14px; padding: 10px 12px; font: inherit; color: var(--ink); box-sizing: border-box; }
+.mf-line { display: flex; align-items: center; }
+.mf-line .mf-row { flex: 1; min-width: 0; }
+.mf-x { border: 0; background: none; color: var(--muted); font-size: 1rem; padding: 10px 14px; cursor: pointer; }
+.mf-ask { display: flex; align-items: center; gap: 6px; padding-right: 10px; font-weight: 700; font-size: .85rem; color: var(--ink); white-space: nowrap; }
+.bonus-nums { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; text-align: center; margin-bottom: 8px; }
+.bonus-nums div { background: var(--surface-2); border-radius: 14px; padding: 10px 4px; display: grid; }
+.bonus-nums strong { font-family: var(--font-display); font-size: 1.4rem; color: var(--accent-deep); }
+.bonus-nums small { color: var(--muted); font-weight: 700; font-size: .75rem; }

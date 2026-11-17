@@ -654,8 +654,11 @@ function renderMyFoods() {
   const row = (f) => {
     const kcal = sumItems(foodItems(f, defaultAmt(f))).calories;
     const thumb = f.photo ? `<img src="${esc(f.photo)}" alt="">` : foodIcon({ name: f.name, icon: f.icon, items: f.items });
-    const head = `<button class="mf-row" data-action="food-open" data-id="${esc(f.id)}"><span class="thumb food-icon">${thumb}</span>
-      <span class="mf-info"><strong>${esc(f.name)}</strong><small>${f.kind === "product" ? `${kcal} kcal · ${defaultAmt(f)} g` : `${kcal} kcal a portion`}${f.uses > 2 ? " · you often have this" : ""}</small></span></button>`;
+    const head = `<div class="mf-line"><button class="mf-row" data-action="food-open" data-id="${esc(f.id)}"><span class="thumb food-icon">${thumb}</span>
+      <span class="mf-info"><strong>${esc(f.name)}</strong><small>${f.kind === "product" ? `${kcal} kcal · ${defaultAmt(f)} g` : `${kcal} kcal a portion`}${f.uses > 2 ? " · you often have this" : ""}</small></span></button>
+      ${state.foodDelete === f.id
+        ? `<span class="mf-ask">Delete? <button class="btn danger small" data-action="food-del" data-id="${esc(f.id)}">Yes</button><button class="btn ghost small" data-action="food-keep">No</button></span>`
+        : `<button class="mf-x" data-action="food-x" data-id="${esc(f.id)}" aria-label="Delete ${esc(f.name)}">✕</button>`}</div>`;
     if (!open || open.id !== f.id) return `<li>${head}</li>`;
     const items = foodItems(f, amt), t = sumItems(items);
     const amts = f.kind === "product"
@@ -667,8 +670,7 @@ function renderMyFoods() {
         <div class="chips">${SLOTS.map(([id, label]) => `<button class="chip" data-action="sheet-slot" data-slot="${id}" aria-pressed="${state.sheetSlot === id}">${label}</button>`).join("")}</div>
         <p class="mf-total"><strong>${t.calories} kcal</strong> · P ${Math.round(t.protein)}g · C ${Math.round(t.carbs)}g · F ${Math.round(t.fat)}g</p>
         <div class="btn-row"><button class="btn" data-action="food-add">Add to ${SLOT_NAME[state.sheetSlot || defaultSlot()].toLowerCase()}</button>
-          <button class="btn ghost small" data-action="food-edit">Edit</button>
-          ${state.foodDelete === f.id ? `<button class="btn danger small" data-action="food-del">Delete for good?</button>` : `<button class="btn ghost small" data-action="food-del">Delete</button>`}</div>
+          <button class="btn ghost small" data-action="food-edit">Edit</button></div>
       </div></li>`;
   };
   $app.innerHTML = `
@@ -677,6 +679,7 @@ function renderMyFoods() {
       <button class="icon-btn" data-action="back" aria-label="Back">${ICON.back}</button>
       <h1>⭐ My foods</h1>
     </header>
+    ${state.foodUndo ? `<div class="notice soft undo-row"><p>Deleted “${esc(state.foodUndo.name)}”.</p><button class="btn ghost small" data-action="food-undo">Undo</button></div>` : ""}
     <div class="field"><input id="mf-search" type="search" placeholder="Search your foods" value="${esc(state.foodSearch || "")}" aria-label="Search your foods"></div>
     ${list.length ? `<ul class="mf-list">${list.map(row).join("")}</ul>`
       : `<section class="card"><p>${q ? "Nothing with that name yet." : "No saved foods yet. Open any meal and tap <strong>⭐ Save to My foods</strong>, or tick it on the Manual page. Products you scan by barcode show up here by themselves."}</p></section>`}
@@ -773,7 +776,7 @@ function renderMeal() {
       <div class="row"><span class="kcal">${m.estimate ? "≈" : ""}${t.calories}<small> kcal</small></span>${m.estimate ? `<span class="estimate">estimate, pick your option below</span>` : ""}</div>
       ${macrosHTML(t)}
       ${m.askOnly ? `<div class="btn-row"><button class="btn" data-action="ask-add">+ Add to today's ${SLOT_NAME[m.slot].toLowerCase()}</button></div>` : ""}
-      ${!m.askOnly && !m._draft && !m.fromFood ? `<div class="btn-row">${state.myFoods?.some((f) => f.id === m.savedFoodId) ? `<span class="saved-food">⭐ In My foods</span>` : `<button class="btn ghost small" data-action="save-food">⭐ Save to My foods</button>`}</div>` : ""}
+      ${!m.askOnly && !m._draft && !m.fromFood ? `<div class="btn-row">${state.myFoods?.some((f) => f.id === m.savedFoodId) ? `<button class="btn ghost small saved-food" data-action="unsave-food" title="Tap to remove from My foods">⭐ In My foods · Remove</button>` : `<button class="btn ghost small" data-action="save-food">⭐ Save to My foods</button>`}</div>` : ""}
       <ul class="items">${m.items.map((it) => `<li><span>${esc(it.name)} <em>${esc(it.amount)}</em></span><span>${it.calories} kcal</span></li>`).join("")}</ul>
     </section>` : ""}
     ${m.photo && !(firstTime && !m.photoFromChat) ? `<button class="meal-photo" data-action="view-photo" data-src="${esc(m.photo)}" aria-label="Open photo full screen"><img src="${esc(m.photo)}" alt="Your meal photo"></button>` : ""}
@@ -1236,8 +1239,28 @@ async function loadBody() {
       manualStarts: period.filter((d) => d.start).map((d) => d.date),
     };
     state.cycle = cycleInfo(state.body.periodDays, state.body.manualStarts);
+    // calorie bonus from steps and exercise: today, and the last 7 days including today
+    const byDay = {};
+    for (const d of docs) if (d.date >= shiftDate(today, -6) && (d.type === "steps" || d.type === "exercise")) (byDay[d.date] ||= []).push(d);
+    const days = [...Array(7)].map((_, i) => shiftDate(today, -6 + i)).map((date) => ({ date, ...dayBurn(byDay[date] || []) }));
+    state.bonus = { today: days[6], week: days.reduce((n, d) => n + d.burned, 0), days };
   } catch { /* keep what we had */ }
   if (["day", "body", "cycle", "calendar"].includes(state.view)) render();
+}
+function bonusCardHTML() {
+  const b = state.bonus;
+  if (!b) return "";
+  const t = b.today;
+  const parts = [t.steps ? `Steps +${t.steps}` : "", t.exercise ? `Exercise +${t.exercise}` : ""].filter(Boolean).join(" · ");
+  const adj = t.adjust;
+  return `<section class="card bonus-card">
+    <h2>🔥 Bonus calories</h2>
+    <div class="bonus-nums">
+      <div><strong>+${t.burned}</strong><small>today so far</small></div>
+      <div><strong>+${b.week.toLocaleString()}</strong><small>last 7 days</small></div>
+    </div>
+    <p class="help">${parts ? `${parts}. ` : "Nothing extra yet today. "}Extra steps and exercise are added to that day's goal.${adj ? ` Your base goal is ${Math.abs(adj)} kcal ${adj < 0 ? "lower" : "higher"} because you usually walk ${adj < 0 ? "less" : "more"} than your activity level expects.` : ""}</p>
+  </section>`;
 }
 function todayPhase() {
   if (!cycleOn() || !state.cycle?.starts?.length) return null;
@@ -1375,6 +1398,7 @@ function renderBody() {
       <p class="help">Morning weigh-ins compare best: after the toilet, before eating or drinking, same scale.</p>
       ${showTip ? `<p class="help tip">Today's weigh-in was later in the day, so it may read 0.5–1.5 kg higher from food and drinks.</p>` : ""}
     </section>
+    ${bonusCardHTML()}
     <section class="card">
       <h2>🎯 Goal weight</h2>
       <div class="date-row"><input id="w-goal" type="number" inputmode="decimal" step="0.1" min="30" max="300" value="${esc(prof?.goalWeight || "")}" placeholder="e.g. 60" aria-label="Goal weight in kg"><span class="unit">kg</span><button class="btn small" data-action="save-goal-weight">Save</button></div>
@@ -2079,7 +2103,7 @@ $app.addEventListener("click", async (ev) => {
   } else if (a === "week-info") {
     state.weekInfo = !state.weekInfo; const y = window.scrollY; render(); window.scrollTo(0, y);
   } else if (a === "myfoods") {
-    state.sheet = false; state.foodOpen = null; state.foodAmt = null; state.foodDelete = null; state.foodSearch = "";
+    state.sheet = false; state.foodOpen = null; state.foodAmt = null; state.foodDelete = null; state.foodSearch = ""; state.foodUndo = null;
     go("myfoods"); loadMyFoods();
   } else if (a === "food-quick") {
     const f = (state.myFoods || []).find((x) => x.id === el.dataset.id);
@@ -2099,10 +2123,27 @@ $app.addEventListener("click", async (ev) => {
     const t = f.kind === "product" ? f.per100 || {} : sumItems(f.items);
     state.manual = { mode: f.kind, editId: f.id, name: f.name, calories: t.calories, protein: Math.round(t.protein || 0), carbs: Math.round(t.carbs || 0), fat: Math.round(t.fat || 0) };
     go("manual");
+  } else if (a === "food-x") {
+    state.foodDelete = el.dataset.id; render();
+  } else if (a === "food-keep") {
+    state.foodDelete = null; render();
   } else if (a === "food-del") {
-    if (state.foodDelete !== state.foodOpen) { state.foodDelete = state.foodOpen; render(); return; }
-    try { await store.remove(state.foodOpen); toast("Deleted from My foods"); state.foodOpen = null; state.foodDelete = null; await loadMyFoods(); }
-    catch { toast("Couldn't delete. Try again."); }
+    const f = (state.myFoods || []).find((x) => x.id === el.dataset.id);
+    if (!f) return;
+    try {
+      await store.remove(f.id);
+      state.foodUndo = { doc: { ...f.raw, id: f.id }, name: f.name };
+      if (state.foodOpen === f.id) state.foodOpen = null;
+      state.foodDelete = null; await loadMyFoods();
+    } catch { toast("Couldn't delete. Try again."); }
+  } else if (a === "food-undo") {
+    const d = state.foodUndo; if (!d) return;
+    try { await store.save(d.doc); state.foodUndo = null; toast("Back in My foods"); await loadMyFoods(); }
+    catch { toast("Couldn't bring it back. Try again."); }
+  } else if (a === "unsave-food") {
+    const m = state.meal; if (!m?.savedFoodId) return;
+    try { await store.remove(m.savedFoodId); m.savedFoodId = null; await saveMeal(m); toast("Removed from My foods"); await loadMyFoods(); }
+    catch { toast("Couldn't remove it. Try again."); }
   } else if (a === "save-food") {
     const m = state.meal; if (!m?.items?.length) return;
     try { m.savedFoodId = await saveFood(m); await saveMeal(m); toast("⭐ Saved to My foods"); await loadMyFoods(); }
