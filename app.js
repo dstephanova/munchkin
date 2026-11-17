@@ -1245,7 +1245,28 @@ async function loadBody() {
     const days = [...Array(7)].map((_, i) => shiftDate(today, -6 + i)).map((date) => ({ date, ...dayBurn(byDay[date] || []) }));
     state.bonus = { today: days[6], week: days.reduce((n, d) => n + d.burned, 0), days };
   } catch { /* keep what we had */ }
+  autoGoalsFromWeight();
   if (["day", "body", "cycle", "calendar"].includes(state.view)) render();
+}
+// Goals follow your weight by themselves: when your smooth weight trend has moved half a kilo or more
+// from the weight your goals were worked out for, they're worked out again (from today on, so older
+// days keep the goals they had). Numbers you typed yourself in Goals stay as they are.
+let autoGoalsBusy = false;
+async function autoGoalsFromWeight() {
+  const g = state.goals, w = state.body?.weights;
+  if (autoGoalsBusy || !g?.profile || !w?.length || g.profile.autoWeight === false) return;
+  const trend = Math.round(w[w.length - 1].trend * 10) / 10;
+  if (Math.abs(trend - Number(g.profile.weight)) < 0.5) return;
+  const profile = { ...g.profile, weight: trend };
+  const sug = suggestGoals(profile);
+  if (!sug) return;
+  const edited = new Set(g.edited || []);
+  const next = { ...g, profile, maintenance: sug.maintenance || g.maintenance, updatedAt: Date.now() };
+  for (const k of ["calories", "protein", "carbs", "fat"]) if (!edited.has(k)) next[k] = sug[k];
+  autoGoalsBusy = true;
+  try { await saveGoalsKeepingHistory(next); toast(`🎯 Goals updated for your trend of ${trend} kg`); }
+  catch { /* try again next time */ }
+  finally { autoGoalsBusy = false; }
 }
 function bonusCardHTML() {
   const b = state.bonus;
@@ -1380,7 +1401,6 @@ function renderBody() {
   const prof = state.goals?.profile;
   const fc = goalForecast();
   const goalW = Number(prof?.weight);
-  const suggestUpdate = last && goalW && Math.abs(last.trend - goalW) >= 1;
   const showTip = last && last.date === today && last.hour != null && last.hour >= 11;
   $app.innerHTML = `
   <main class="screen">
@@ -1410,7 +1430,7 @@ function renderBody() {
       ${weightChartSVG(pts, marks, from, today, fc?.date ? fc : null)}
       ${fc ? `<p class="goal-forecast">${fc.text}</p>` : ""}
       <p class="help">Dots are your weigh-ins; the line is your trend, which ignores day-to-day water jumps.${cycleOn() ? ` Pink bands are period days (lighter = predicted). <button class="link-btn inline" data-action="cycle">See your cycle ›</button>` : ""}</p>
-      ${suggestUpdate ? `<div class="notice soft"><p>Your daily calories and protein are still worked out for <strong>${goalW} kg</strong>. Your weigh-ins now say about <strong>${last.trend.toFixed(1)} kg</strong>.</p><p class="help">Updating gives you slightly ${last.trend < goalW ? "lower" : "higher"} targets (never under ${safeMinimum(prof)} kcal). Numbers you typed yourself stay. Tip: wait for a week of weigh-ins so water jumps don't fool it.</p><div class="btn-row"><button class="btn ghost small" data-action="weight-goals">Update my goals to ${last.trend.toFixed(1)} kg</button></div></div>` : ""}
+      ${goalW ? `<p class="help">Your goals are worked out for <strong>${goalW} kg</strong> and follow your trend by themselves (every half kilo). Older days keep the goals they had.</p>` : ""}
       <ul class="wlist">${[...w].reverse().slice(0, 8).map((e) => `<li><span>${prettyDate(e.date)}${e.source ? ` <em>${esc(e.source)}</em>` : ""}</span><span>${e.kg.toFixed(1)} kg <button class="link-btn" data-action="del-weight" data-date="${e.date}" aria-label="Delete">✕</button></span></li>`).join("")}</ul>`
       : `<p>No weigh-ins yet. Add your first one above.</p>`}
     </section>
@@ -2429,7 +2449,7 @@ async function start() {
     restoreOpen();
     setTimeout(deliverRestoredPhoto, 50);
     loadMyFoods();
-    unsubGoals = store.watchGoals((g) => { state.goals = g; state.cycle && null; if (["day", "settings", "body"].includes(state.view)) render(); refreshWeek(); });
+    unsubGoals = store.watchGoals((g) => { state.goals = g; state.cycle && null; autoGoalsFromWeight(); if (["day", "settings", "body"].includes(state.view)) render(); refreshWeek(); });
     render();
   });
   if ("serviceWorker" in navigator && !demo) {
