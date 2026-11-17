@@ -301,6 +301,7 @@ function renderDay() {
       <button class="icon-btn" data-action="next-day" aria-label="Next day" ${isToday ? "disabled" : ""}>${ICON.next}</button>
     </nav>
     ${summaryHTML(t, bubble, dayBurn(state.meals))}
+    ${welcomeBackHTML()}
     ${tilesHTML()}
     ${weekHTML()}
     ${slotsHTML}
@@ -1244,6 +1245,15 @@ async function loadBody() {
     for (const d of docs) if (d.date >= shiftDate(today, -6) && (d.type === "steps" || d.type === "exercise")) (byDay[d.date] ||= []).push(d);
     const days = [...Array(7)].map((_, i) => shiftDate(today, -6 + i)).map((date) => ({ date, ...dayBurn(byDay[date] || []) }));
     state.bonus = { today: days[6], week: days.reduce((n, d) => n + d.burned, 0), days };
+    // every finished, logged day: what your body used (upkeep + bonus) minus what you ate
+    const perDay = {};
+    for (const d of docs) if (d.date < today) (perDay[d.date] ||= []).push(d);
+    state.ledger = Object.entries(perDay).filter(([, list]) => list.some(isMealDoc)).map(([date, list]) => {
+      const maint = goalsOn(date)?.maintenance || state.goals?.maintenance || 0;
+      const eaten = sumItems(list.filter(isMealDoc).flatMap((m) => m.items || [])).calories;
+      return { date, net: maint ? Math.round(maint + dayBurn(list).total - eaten) : null };
+    }).filter((d) => d.net != null).sort((a, b) => a.date.localeCompare(b.date));
+    try { state.runsPrefs = (await store.get("runs-settings")) || { joins: [], fresh: [], acked: [] }; } catch { state.runsPrefs ||= { joins: [], fresh: [], acked: [] }; }
   } catch { /* keep what we had */ }
   autoGoalsFromWeight();
   if (["day", "body", "cycle", "calendar"].includes(state.view)) render();
@@ -1267,6 +1277,63 @@ async function autoGoalsFromWeight() {
   try { await saveGoalsKeepingHistory(next); toast(`🎯 Goals updated for your trend of ${trend} kg`); }
   catch { /* try again next time */ }
   finally { autoGoalsBusy = false; }
+}
+// ---------- "lost so far": counted per run; a run ends after a month with nothing logged ----------
+const RUN_GAP = 30;
+function computeRuns() {
+  const L = state.ledger || [], P = state.runsPrefs || { joins: [], fresh: [], acked: [] };
+  if (!L.length) return [];
+  const runs = [];
+  let cur = null, prev = null;
+  for (const d of L) {
+    const gap = prev ? Math.round((fromIso(d.date) - fromIso(prev)) / 86400000) - 1 : 0;
+    const breakHere = prev && gap >= RUN_GAP;
+    const fresh = prev && P.fresh.some((f) => f > prev && f <= d.date);
+    const natural = breakHere && !fresh;
+    if (!cur || fresh || (natural && !P.joins.includes(d.date))) {
+      cur = { start: d.date, end: d.date, net: 0, days: 0, natural: !!natural, joined: [] };
+      runs.push(cur);
+    } else if (natural) cur.joined.push(d.date);
+    cur.end = d.date; cur.net += d.net; cur.days++;
+    prev = d.date;
+  }
+  // "Start fresh" tapped after the last logged day: a new run that starts at zero
+  const lastFresh = [...P.fresh].sort().pop();
+  if (lastFresh && lastFresh > prev) runs.push({ start: lastFresh, end: lastFresh, net: 0, days: 0, natural: false, joined: [] });
+  return runs;
+}
+const kgFat = (kcal) => (Math.abs(kcal) / KCAL_PER_KG).toFixed(2);
+const runRange = (r) => `${fromIso(r.start).toLocaleDateString("en-GB", { day: "numeric", month: "short" })} – ${fromIso(r.end).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}`;
+async function saveRunsPrefs(change) {
+  const P = { joins: [], fresh: [], acked: [], ...(state.runsPrefs || {}) };
+  change(P);
+  state.runsPrefs = P;
+  try { await store.save({ id: "runs-settings", type: "runs", ...P, updatedAt: Date.now() }); } catch { toast("Couldn't save. Try again."); }
+  render();
+}
+// shown once after a break of a month or more
+function welcomeBackHTML() {
+  const runs = computeRuns();
+  if (runs.length < 2) return "";
+  const r = runs[runs.length - 1], before = runs[runs.length - 2];
+  if (!r.natural || (state.runsPrefs?.acked || []).includes(r.start)) return "";
+  return `<div class="notice soft welcome-back"><p><strong>Welcome back! 💜</strong> Keep counting from your last run (${before.net >= 0 ? "−" : "+"}${Math.abs(before.net).toLocaleString()} kcal), or start a new one?</p>
+    <div class="btn-row"><button class="btn small" data-action="run-join" data-date="${r.start}">Keep counting</button><button class="btn ghost small" data-action="run-new" data-date="${r.start}">Start new</button></div></div>`;
+}
+function lostCardHTML() {
+  const runs = computeRuns();
+  if (!runs.length) return "";
+  const r = runs[runs.length - 1], lost = r.net >= 0;
+  const earlier = runs.slice(0, -1).reverse();
+  return `<section class="card lost-card">
+    <h2>📉 Lost so far</h2>
+    ${welcomeBackHTML()}
+    <div class="lost-big"><strong>${lost ? "−" : "+"}${Math.abs(r.net).toLocaleString()} kcal</strong><span>≈ ${kgFat(r.net)} kg of fat ${lost ? "lost" : "gained"}</span></div>
+    <p class="help">${r.days ? `Since ${fromIso(r.start).toLocaleDateString("en-GB", { day: "numeric", month: "long" })} · ${r.days} logged day${r.days === 1 ? "" : "s"}.` : "Fresh start! Counting begins with today, once it's over."} What your body used (upkeep + bonus) minus what you ate. Today counts once it's over; days you didn't log are skipped.</p>
+    ${r.joined.map((d) => `<p class="help run-line">Joined across a break before ${fromIso(d).toLocaleDateString("en-GB", { day: "numeric", month: "short" })} · <button class="link-btn" data-action="run-split" data-date="${d}">Split here</button></p>`).join("")}
+    ${earlier.length ? `<div class="runs-earlier"><small>Earlier</small>${earlier.map((e, i) => `<p class="run-line">${runRange(e)}: ${e.net >= 0 ? "−" : "+"}${Math.abs(e.net).toLocaleString()} kcal (≈ ${kgFat(e.net)} kg) ${i === 0 && e.end ? `<button class="link-btn" data-action="run-join" data-date="${runs[runs.length - 1].start}" data-prev="${e.end}">Join with the next</button>` : ""}</p>`).join("")}</div>` : ""}
+    <div class="btn-row">${state.runFreshAsk ? `<span class="mf-ask">Start counting from today? <button class="btn danger small" data-action="run-fresh">Yes</button><button class="btn ghost small" data-action="run-fresh-no">No</button></span>` : `<button class="btn ghost small" data-action="run-fresh-ask">Start fresh</button>`}</div>
+  </section>`;
 }
 function bonusCardHTML() {
   const b = state.bonus;
@@ -1418,6 +1485,7 @@ function renderBody() {
       <p class="help">Morning weigh-ins compare best: after the toilet, before eating or drinking, same scale.</p>
       ${showTip ? `<p class="help tip">Today's weigh-in was later in the day, so it may read 0.5–1.5 kg higher from food and drinks.</p>` : ""}
     </section>
+    ${lostCardHTML()}
     ${bonusCardHTML()}
     <section class="card">
       <h2>🎯 Goal weight</h2>
@@ -1430,7 +1498,8 @@ function renderBody() {
       ${weightChartSVG(pts, marks, from, today, fc?.date ? fc : null)}
       ${fc ? `<p class="goal-forecast">${fc.text}</p>` : ""}
       <p class="help">Dots are your weigh-ins; the line is your trend, which ignores day-to-day water jumps.${cycleOn() ? ` Pink bands are period days (lighter = predicted). <button class="link-btn inline" data-action="cycle">See your cycle ›</button>` : ""}</p>
-      ${goalW ? `<p class="help">Your goals are worked out for <strong>${goalW} kg</strong> and follow your trend by themselves (every half kilo). Older days keep the goals they had.</p>` : ""}
+      ${goalW ? `<p class="help">Your goals are worked out for <strong>${goalW} kg</strong> and follow your trend by themselves (every half kilo). Older days keep the goals they had.</p>
+        ${last && Math.abs(last.trend - goalW) >= 0.1 ? `<div class="btn-row"><button class="btn ghost small" data-action="weight-goals">Update my goals to ${last.trend.toFixed(1)} kg now</button></div>` : ""}` : ""}
       <ul class="wlist">${[...w].reverse().slice(0, 8).map((e) => `<li><span>${prettyDate(e.date)}${e.source ? ` <em>${esc(e.source)}</em>` : ""}</span><span>${e.kg.toFixed(1)} kg <button class="link-btn" data-action="del-weight" data-date="${e.date}" aria-label="Delete">✕</button></span></li>`).join("")}</ul>`
       : `<p>No weigh-ins yet. Add your first one above.</p>`}
     </section>
@@ -2118,6 +2187,29 @@ $app.addEventListener("click", async (ev) => {
     if (v && (v < 30 || v > 300)) { toast("That goal weight looks off. Try again."); return; }
     try { await store.saveGoals({ ...state.goals, profile: { ...state.goals.profile, goalWeight: v || "" }, updatedAt: Date.now() }); toast(v ? `🎯 Goal set: ${v} kg` : "Goal weight removed"); }
     catch { toast("Couldn't save. Try again."); }
+  } else if (a === "run-join") {
+    const d = el.dataset.date;
+    const prevEnd = el.dataset.prev || "";
+    await saveRunsPrefs((P) => {
+      if (!P.joins.includes(d)) P.joins.push(d); if (!P.acked.includes(d)) P.acked.push(d);
+      if (prevEnd) P.fresh = P.fresh.filter((f) => !(f > prevEnd && f <= d)); // undo a "start fresh" between them
+    });
+    toast("Runs joined 💜");
+  } else if (a === "run-new") {
+    const d = el.dataset.date;
+    await saveRunsPrefs((P) => { if (!P.acked.includes(d)) P.acked.push(d); P.joins = P.joins.filter((x) => x !== d); });
+  } else if (a === "run-split") {
+    const d = el.dataset.date;
+    await saveRunsPrefs((P) => { P.joins = P.joins.filter((x) => x !== d); if (!P.acked.includes(d)) P.acked.push(d); });
+  } else if (a === "run-fresh-ask") {
+    state.runFreshAsk = true; render();
+  } else if (a === "run-fresh-no") {
+    state.runFreshAsk = false; render();
+  } else if (a === "run-fresh") {
+    state.runFreshAsk = false;
+    const t = iso(new Date());
+    await saveRunsPrefs((P) => { if (!P.fresh.includes(t)) P.fresh.push(t); });
+    toast("Fresh start from today ✨");
   } else if (a === "steps-info") {
     state.stepsInfo = !state.stepsInfo; const y = window.scrollY; render(); window.scrollTo(0, y);
   } else if (a === "week-info") {
@@ -2422,6 +2514,7 @@ async function start() {
   render();
   try {
     store = await createStore({ demo });
+    if (demo) window.__demoStore = store; // test hook, demo mode only
   } catch {
     $app.innerHTML = `<div class="login"><div class="inner"><div class="hero-cat">${catPic()}</div><p>Munchkin couldn't connect. Check your internet and reopen the app.</p></div></div>`;
     return;
