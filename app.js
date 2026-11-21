@@ -600,6 +600,46 @@ document.addEventListener("contextmenu", (e) => { if (drag.id) e.preventDefault(
 document.addEventListener("click", (e) => { if (Date.now() - drag.justDropped < 400) { e.preventDefault(); e.stopPropagation(); } }, true);
 
 // ---------- My foods: saved foods and products, added again in two taps ----------
+// A short summary of the diary for the chat: today, the last 7 days, weight. Kept small so it stays quick and cheap.
+async function diaryForAI(m) {
+  if (!store || !state.goals) return "";
+  try {
+    const today = iso(new Date());
+    const docs = await store.getRange(shiftDate(today, -7), today);
+    const byDay = {};
+    for (const d of docs) (byDay[d.date] ||= []).push(d);
+    const todayDocs = (byDay[today] || []).filter((d) => d.id !== m.id);
+    const meals = todayDocs.filter(isMealDoc);
+    const eaten = sumItems(meals.flatMap((x) => x.items || []));
+    const burn = dayBurn(todayDocs);
+    const g = goalsOn(today) || state.goals;
+    const goalCal = Math.max(safeMinimum(state.goals.profile || {}), (g.calories || 0) + burn.total);
+    const r = (x) => Math.round(x || 0);
+    const lines = [
+      `Today (${today}, ${new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}): eaten ${r(eaten.calories)} of ${goalCal} kcal (${r(goalCal - eaten.calories)} left); protein ${r(eaten.protein)}/${r(g.protein)} g, carbs ${r(eaten.carbs)}/${r(g.carbs)} g, fat ${r(eaten.fat)}/${r(g.fat)} g.`,
+      meals.length ? `Logged today: ${meals.map((x) => `${x.name} (${SLOT_NAME[x.slot || "snack"].toLowerCase()}, ${r(sumItems(x.items || []).calories)} kcal)`).join("; ")}.` : "Nothing else logged today yet.",
+      `Movement today: ${(todayDocs.find((d) => d.type === "steps")?.steps ?? 0).toLocaleString()} steps${burn.exercise ? `, exercise ${burn.exercise} kcal` : ""}; bonus added to today's goal ${burn.burned} kcal.`,
+    ];
+    if (!m.askOnly) return lines.slice(0, 2).join("\n"); // meal chats only need today's numbers
+    const past = Object.entries(byDay).filter(([d, list]) => d < today && list.some(isMealDoc));
+    if (past.length) {
+      const sums = past.map(([, list]) => sumItems(list.filter(isMealDoc).flatMap((x) => x.items || [])));
+      const avg = (k) => r(sums.reduce((n, t) => n + (t[k] || 0), 0) / sums.length);
+      lines.push(`Last 7 days (${past.length} logged): about ${avg("calories")} kcal, ${avg("protein")} g protein, ${avg("carbs")} g carbs, ${avg("fat")} g fat a day.${state.week ? ` That pace is about ${state.week.kgWeek.toFixed(2)} kg a week.` : ""}`);
+    }
+    const w = state.body?.weights || [];
+    if (w.length) {
+      const last = w[w.length - 1], ch = weeklyChange(w), fc = goalForecast();
+      lines.push(`Weight: last weigh-in ${last.kg} kg on ${last.date}, smooth trend ${last.trend} kg${ch != null ? `, ${ch > 0 ? "+" : ""}${ch} kg a week` : ""}.${fc?.target ? ` Goal weight ${fc.target} kg${fc.date ? `, around ${fc.date} at this pace` : ""}.` : ""}`);
+    }
+    const p = state.goals.profile || {};
+    lines.push(`Goals are for: ${p.sex || "?"}, ${p.age || "?"} years, ${p.height || "?"} cm, activity "${(ACTIVITY.find((a) => a[0] === p.activity) || [, "?"])[1]}", pace "${(PACES.find((x) => x[0] === paceOf(p)) || [, "?"])[1]}"; daily upkeep about ${r(g.maintenance)} kcal.`);
+    const ph = todayPhase();
+    if (ph) lines.push(`Cycle: day ${ph.day}, ${PHASE[ph.phase].name.toLowerCase()}.`);
+    if (demo) console.log("[diary]\n" + lines.join("\n")); // visible in demo mode only, for checking
+    return lines.join("\n");
+  } catch (e) { if (demo) console.log("[diary error]", e); return ""; }
+}
 function myFoodsForAI() {
   return (state.myFoods || []).slice(0, 25).map((f) => {
     const t = f.kind === "product" ? f.per100 || {} : sumItems(f.items);
@@ -1345,22 +1385,18 @@ function lostCardHTML() {
     <div class="btn-row">${state.runFreshAsk ? `<span class="mf-ask">Start counting from today? <button class="btn danger small" data-action="run-fresh">Yes</button><button class="btn ghost small" data-action="run-fresh-no">No</button></span>` : `<button class="btn ghost small" data-action="run-fresh-ask">Start fresh</button>`}</div>
   </section>`;
 }
-// Suggest a different activity level when your last 2 weeks clearly fit one (never switches by itself)
+// How your picked activity level compares with your real walking lately (info only; steps are already counted)
 function levelSuggestHTML() {
   const mv = state.movement, p = state.goals?.profile;
   if (!mv || !p || mv.stepDays < 10) return "";
-  const fits = levelFromMovement(mv.avgSteps, mv.exMinPerDay);
-  if (fits === p.activity) return "";
-  let snoozed = null;
-  try { snoozed = localStorage.getItem("munchkin.levelSnooze"); } catch {}
-  if (snoozed && snoozed > iso(new Date())) return "";
+  const fits = levelFromMovement(mv.avgSteps, 0);
   const name = (k) => (ACTIVITY.find((a) => a[0] === k) || [, k])[1];
   const order = ACTIVITY.map((a) => a[0]);
-  const more = order.indexOf(fits) > order.indexOf(p.activity);
-  const wk = Math.round(mv.workouts / 2);
-  return `<div class="notice soft level-suggest"><p>You've been ${more ? "more" : "less"} active than “${esc(name(p.activity))}” lately (about ${mv.avgSteps.toLocaleString()} steps a day${wk ? `, ${wk} workout${wk === 1 ? "" : "s"} a week` : ""}). Switch to <strong>${esc(name(fits))}</strong>?</p>
-    <p class="help">This changes your calories and protein to match. Munchkin never switches by itself.</p>
-    <div class="btn-row"><button class="btn small" data-action="level-switch" data-level="${fits}">Switch</button><button class="btn ghost small" data-action="level-snooze">Not now</button></div></div>`;
+  const steps = mv.avgSteps.toLocaleString();
+  const line = fits === p.activity
+    ? `✅ Your activity level matches what you've been doing lately (about ${steps} steps a day).`
+    : `🚶 You've been walking ${order.indexOf(fits) > order.indexOf(p.activity) ? "more" : "less"} than “${esc(name(p.activity))}” expects lately (about ${steps} steps a day).`;
+  return `<div class="notice soft level-suggest"><p>${line}</p><p class="help">No need to change anything: your steps and workouts are already added to your calories.</p></div>`;
 }
 function bonusCardHTML() {
   const b = state.bonus;
@@ -1970,7 +2006,7 @@ async function runAI() {
   render(); scrollToEnd(); setAIStatus("Thinking…");
   try {
     const turns = m.chat.slice(-24);
-    const res = await askAI(turns, m.chat.length <= 24 && !m.photoFromChat ? m.photo : null, { demo, onStatus: setAIStatus, meal: { name: m.name, items: m.items, slot: m.slot, askOnly: !!m.askOnly }, myFoods: myFoodsForAI() });
+    const res = await askAI(turns, m.chat.length <= 24 && !m.photoFromChat ? m.photo : null, { demo, onStatus: setAIStatus, meal: { name: m.name, items: m.items, slot: m.slot, askOnly: !!m.askOnly }, myFoods: myFoodsForAI(), diary: await diaryForAI(m) });
     stopAIStatus();
     m.chat.push({ role: "model", text: res.reply, sources: res.sources || [], questions: res.questions || [] });
     state.answers = {};
