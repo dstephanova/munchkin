@@ -1394,9 +1394,10 @@ function levelSuggestHTML() {
   const order = ACTIVITY.map((a) => a[0]);
   const steps = mv.avgSteps.toLocaleString();
   const line = fits === p.activity
-    ? `✅ Your activity level matches what you've been doing lately (about ${steps} steps a day).`
-    : `🚶 You've been walking ${order.indexOf(fits) > order.indexOf(p.activity) ? "more" : "less"} than “${esc(name(p.activity))}” expects lately (about ${steps} steps a day).`;
-  return `<div class="notice soft level-suggest"><p>${line}</p><p class="help">No need to change anything: your steps and workouts are already added to your calories.</p></div>`;
+    ? `🚶 ${steps} steps a day lately · fits “${esc(name(p.activity))}” ✓`
+    : `🚶 ${steps} steps a day lately · ${order.indexOf(fits) > order.indexOf(p.activity) ? "more" : "less"} than “${esc(name(p.activity))}” expects`;
+  return `<div class="level-line"><span>${line}</span><button class="info-btn" data-action="level-info" aria-label="What this means">ⓘ</button></div>
+    ${state.levelInfo ? `<p class="help level-help">No need to change anything: your steps and workouts are already added to your calories.</p>` : ""}`;
 }
 function bonusCardHTML() {
   const b = state.bonus;
@@ -1411,6 +1412,7 @@ function bonusCardHTML() {
       <div><strong>+${b.week.toLocaleString()}</strong><small>last 7 days</small></div>
     </div>
     <p class="help">${parts ? `${parts}. ` : "Nothing extra yet today. "}Extra steps and exercise are added to that day's goal.${adj ? ` Your base goal is ${Math.abs(adj)} kcal ${adj < 0 ? "lower" : "higher"} because you usually walk ${adj < 0 ? "less" : "more"} than your activity level expects.` : ""}</p>
+    ${levelSuggestHTML()}
   </section>`;
 }
 function todayPhase() {
@@ -1548,7 +1550,6 @@ function renderBody() {
       <p class="help">Morning weigh-ins compare best: after the toilet, before eating or drinking, same scale.</p>
       ${showTip ? `<p class="help tip">Today's weigh-in was later in the day, so it may read 0.5–1.5 kg higher from food and drinks.</p>` : ""}
     </section>
-    ${levelSuggestHTML()}
     ${lostCardHTML()}
     ${bonusCardHTML()}
     <section class="card">
@@ -2251,6 +2252,8 @@ $app.addEventListener("click", async (ev) => {
     if (v && (v < 30 || v > 300)) { toast("That goal weight looks off. Try again."); return; }
     try { await store.saveGoals({ ...state.goals, profile: { ...state.goals.profile, goalWeight: v || "" }, updatedAt: Date.now() }); toast(v ? `🎯 Goal set: ${v} kg` : "Goal weight removed"); }
     catch { toast("Couldn't save. Try again."); }
+  } else if (a === "level-info") {
+    state.levelInfo = !state.levelInfo; const y = window.scrollY; render(); window.scrollTo(0, y);
   } else if (a === "level-switch") {
     const g = state.goals; if (!g?.profile) return;
     const profile = { ...g.profile, activity: el.dataset.level };
