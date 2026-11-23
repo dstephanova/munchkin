@@ -1297,7 +1297,9 @@ async function loadBody() {
       exMinPerDay: recent.filter((d) => d.type === "exercise").reduce((n, d) => n + (Number(d.minutes) || 0), 0) / 14,
       workouts: recent.filter((d) => d.type === "exercise").length,
     };
-    // every finished, logged day: what your body used (upkeep + bonus) minus what you ate
+    // every finished, logged day: what your body used (upkeep + bonus) minus what you ate.
+    // Wait for your usual steps first, so every device works it out from the same numbers.
+    await learnSteps();
     const perDay = {};
     for (const d of docs) if (d.date < today) (perDay[d.date] ||= []).push(d);
     state.ledger = Object.entries(perDay).filter(([, list]) => list.some(isMealDoc)).map(([date, list]) => {
