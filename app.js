@@ -237,13 +237,16 @@ const isMealDoc = (d) => !d.type || d.type === "meal";
 // - exercise you logged and steps above your normal day ("burned")
 // - adjust: your normal day vs your activity level's normal (minus if you usually walk less)
 // The normal day a day used is saved with its steps, so old days keep their own numbers.
+// What a day adds to (or takes from) the calorie goal:
+// - burned: logged exercise + that day's steps above your activity level's normal day
+// - adjust: a finished day under that normal counts a little lower; a day with no step count uses your usual steps
 function dayBurn(docs) {
   const ex = docs.filter((d) => d.type === "exercise").reduce((n, d) => n + (d.burned || 0), 0);
   const st = docs.find((d) => d.type === "steps");
-  const usual = st?.usual ?? state.usualSteps;
-  const sb = stepsBurn(st ? st.steps : 0, state.goals?.profile, usual);
+  const date = st?.date || docs[0]?.date || iso(new Date());
+  const sb = stepsBurn(st ? st.steps : 0, state.goals?.profile, st ? null : state.usualSteps);
   const steps = st ? sb.burned : 0;
-  const adjust = usual != null ? sb.adjust : 0;
+  const adjust = st ? (date < iso(new Date()) ? sb.under : 0) : sb.adjust;
   return { exercise: ex, steps, adjust, burned: ex + steps, total: ex + steps + adjust };
 }
 
@@ -356,7 +359,7 @@ function exerciseSectionHTML() {
   const ex = state.meals.filter((d) => d.type === "exercise").sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
   const st = state.meals.find((d) => d.type === "steps");
   const usual = st?.usual ?? state.usualSteps;
-  const sb = st ? stepsBurn(st.steps, state.goals?.profile, usual) : null;
+  const sb = st ? stepsBurn(st.steps, state.goals?.profile) : null;
   const emoji = (k) => (EXERCISES.find((e) => e[0] === k)?.[1] || "✨").split(" ")[0];
   return `<section class="slot">
     <div class="slot-head"><h2>Exercise</h2>${ex.length || sb?.burned ? `<span class="sum">🔥 ${dayBurn(state.meals).burned} kcal</span>` : ""}</div>
@@ -389,9 +392,7 @@ function exerciseSectionHTML() {
 function stepsExplainHTML(usual) {
   const p = state.goals?.profile;
   const level = levelSteps(p), lvl = (ACTIVITY.find((a) => a[0] === p?.activity) || ACTIVITY[1])[1];
-  const adj = stepsBurn(0, p, usual).adjust;
-  if (usual == null) return `Your first week: Munchkin expects about <strong>${level.toLocaleString()} steps</strong> a day (normal for “${lvl}”). Steps above that add to today's goal. After a week it learns your own normal.`;
-  return `Your normal day: about <strong>${usual.toLocaleString()} steps</strong> (average of the last 7 days). “${lvl}” expects ${level.toLocaleString()}, ${adj === 0 ? "so your goal stays the same" : `so your daily goal is <strong>${Math.abs(adj)} kcal ${adj < 0 ? "lower" : "higher"}</strong>`}. Steps above your normal add extra on that day.`;
+  return `“${lvl}” already includes about <strong>${level.toLocaleString()} steps</strong> a day. Every step above that adds to that day's goal. A finished day with fewer steps counts a little lower in your week.${usual != null ? ` Your usual lately: about ${usual.toLocaleString()} steps (used only on days your steps don't sync).` : ""}`;
 }
 
 // Late in the day with almost no steps usually means Google Fit stopped sharing them.
@@ -615,8 +616,11 @@ async function diaryForAI(m) {
     const g = goalsOn(today) || state.goals;
     const goalCal = Math.max(safeMinimum(state.goals.profile || {}), (g.calories || 0) + burn.total);
     const r = (x) => Math.round(x || 0);
+    const forMeal = !m.askOnly && m.date === today;
     const lines = [
-      `Today (${today}, ${new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}): eaten ${r(eaten.calories)} of ${goalCal} kcal (${r(goalCal - eaten.calories)} left); protein ${r(eaten.protein)}/${r(g.protein)} g, carbs ${r(eaten.carbs)}/${r(g.carbs)} g, fat ${r(eaten.fat)}/${r(g.fat)} g.`,
+      forMeal
+        ? `Today (${today}): today's goal ${goalCal} kcal. OTHER meals today (not counting this one): ${r(eaten.calories)} kcal, protein ${r(eaten.protein)}/${r(g.protein)} g. So BEFORE this meal ${r(goalCal - eaten.calories)} kcal were left. When you give this meal's numbers, also say what's left AFTER it (${r(goalCal - eaten.calories)} minus this meal's calories), in the person's language; if that goes below zero, say kindly how much over today it is.`
+        : `Today (${today}, ${new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}): eaten ${r(eaten.calories)} of ${goalCal} kcal (${r(goalCal - eaten.calories)} left); protein ${r(eaten.protein)}/${r(g.protein)} g, carbs ${r(eaten.carbs)}/${r(g.carbs)} g, fat ${r(eaten.fat)}/${r(g.fat)} g.`,
       meals.length ? `Logged today: ${meals.map((x) => `${x.name} (${SLOT_NAME[x.slot || "snack"].toLowerCase()}, ${r(sumItems(x.items || []).calories)} kcal)`).join("; ")}.` : "Nothing else logged today yet.",
       `Movement today: ${(todayDocs.find((d) => d.type === "steps")?.steps ?? 0).toLocaleString()} steps${burn.exercise ? `, exercise ${burn.exercise} kcal` : ""}; bonus added to today's goal ${burn.burned} kcal.`,
     ];
@@ -1411,7 +1415,7 @@ function bonusCardHTML() {
       <div><strong>+${t.burned}</strong><small>today so far</small></div>
       <div><strong>+${b.week.toLocaleString()}</strong><small>last 7 days</small></div>
     </div>
-    <p class="help">${parts ? `${parts}. ` : "Nothing extra yet today. "}Extra steps and exercise are added to that day's goal.${adj ? ` Your base goal is ${Math.abs(adj)} kcal ${adj < 0 ? "lower" : "higher"} because you usually walk ${adj < 0 ? "less" : "more"} than your activity level expects.` : ""}</p>
+    <p class="help">${parts ? `${parts}. ` : "Nothing extra yet today. "}Extra steps and exercise are added to that day's goal.${adj ? ` Your base goal is ${Math.abs(adj)} kcal ${adj < 0 ? "lower" : "higher"} because you usually walk ${adj < 0 ? "less" : "more"} than your activity level expects (until today's steps sync).` : ""}</p>
     ${levelSuggestHTML()}
   </section>`;
 }

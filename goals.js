@@ -95,15 +95,16 @@ const BASE_STEPS = { sedentary: 3000, light: 5000, moderate: 7000, active: 9000,
 export const levelSteps = (p) => BASE_STEPS[p?.activity] ?? 5000;
 const kcalPerStep = (p) => 0.04 * ((Number(p?.weight) || 65) / 70);
 
-// usual = your own normal steps (average of the last 7 days), or null in your first week.
-// - adjust: how much your real normal day differs from your activity level's normal (can be minus)
-// - burned: extra calories from steps above your normal, on this day
+// A day's steps compared with the normal day of your activity level (which its calories already include).
+// - burned: steps above that normal, added to the day's goal
+// - under: for a finished day with fewer steps than that normal, the calories you didn't burn (minus)
+// - adjust: used only for days without a step count, from your usual (average) steps
 export function stepsBurn(steps, p, usual = null) {
   const level = levelSteps(p);
-  const base = usual ?? level;
   const k = kcalPerStep(p);
-  const extra = Math.max(0, Number(steps || 0) - base);
-  return { burned: Math.round(extra * k), base, level, adjust: Math.round((base - level) * k) };
+  const diff = Number(steps || 0) - level;
+  return { burned: Math.round(Math.max(0, diff) * k), under: Math.round(Math.min(0, diff) * k), level, base: level,
+    adjust: usual != null ? Math.round((usual - level) * k) : 0 };
 }
 
 // Your normal day: the average of the last 7 days that have a step count (needs at least 5 of them).
