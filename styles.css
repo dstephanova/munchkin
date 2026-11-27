@@ -780,3 +780,4 @@ body.dragging { overflow: hidden; }
 .goal-bar span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--accent), #ff8fb8); min-width: 4px; }
 .goal-bar.small { height: 6px; margin: 0; flex: 1; max-width: 120px; }
 .goal-line-today { all: unset; box-sizing: border-box; cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; margin: 10px 0 0; padding: 0 6px; font-size: .85rem; font-weight: 800; color: var(--ink); }
+.lost-card .help .link-btn { display: inline; text-align: left; padding: 0; margin: 0; font-size: inherit; }

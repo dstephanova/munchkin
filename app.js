@@ -1377,6 +1377,9 @@ function welcomeBackHTML() {
     <div class="btn-row"><button class="btn small" data-action="run-join" data-date="${r.start}">Keep counting</button><button class="btn ghost small" data-action="run-new" data-date="${r.start}">Start new</button></div></div>`;
 }
 // How far along the way to your goal weight the current run is: start = your weight trend when the run began
+// Progress toward your goal weight. Two ways to measure the whole way:
+// - "now" (default): what you've lost so far + what's still left from your current weight to the goal
+// - "start": from your weight when this run began to the goal
 function goalProgress() {
   const runs = computeRuns();
   const target = Number(state.goals?.profile?.goalWeight);
@@ -1385,10 +1388,14 @@ function goalProgress() {
   const w = state.body?.weights || [];
   const before = [...w].reverse().find((e) => e.date <= r.start);
   const start = before ? before.trend : w.length ? w[0].trend : Number(state.goals.profile.weight);
-  const needKg = Math.round((start - target) * 10) / 10;
-  if (!(needKg > 0.2)) return null; // goal isn't a loss from where this run started
+  const current = w.length ? w[w.length - 1].trend : Number(state.goals.profile.weight);
   const lostKg = Math.max(0, r.net) / KCAL_PER_KG;
-  return { start, target, needKg, needKcal: Math.round(needKg * KCAL_PER_KG), lostKg, net: r.net, pct: Math.min(100, Math.round((lostKg / needKg) * 100)) };
+  const leftKg = Math.max(0, Math.round((current - target) * 10) / 10);
+  const mode = state.runsPrefs?.progressMode === "start" ? "start" : "now";
+  const needKg = mode === "start" ? Math.round((start - target) * 10) / 10 : Math.round((lostKg + leftKg) * 10) / 10;
+  if (!(needKg > 0.2)) return null;
+  return { mode, start, current, target, needKg, leftKg, needKcal: Math.round(needKg * KCAL_PER_KG), lostKg, net: r.net,
+    pct: Math.min(100, Math.round((lostKg / needKg) * 100)) };
 }
 function lostCardHTML() {
   const runs = computeRuns();
@@ -1403,7 +1410,10 @@ function lostCardHTML() {
       if (!gp) return `<div class="lost-big"><strong>${lost ? "−" : "+"}${Math.abs(r.net).toLocaleString()} kcal</strong><span>≈ ${kgFat(r.net)} kg of fat ${lost ? "lost" : "gained"}</span></div>`;
       return `<div class="lost-big"><strong>${lost ? "−" : "+"}${Math.abs(r.net).toLocaleString()} <small>/ −${gp.needKcal.toLocaleString()} kcal</small></strong>
         <div class="goal-bar" role="progressbar" aria-valuenow="${gp.pct}" aria-valuemin="0" aria-valuemax="100"><span style="width:${gp.pct}%"></span></div>
-        <span>${gp.lostKg.toFixed(1)} kg of ${gp.needKg.toFixed(1)} kg to your goal (${gp.target} kg) · ${gp.pct}%</span></div>`;
+        <span>${gp.lostKg.toFixed(1)} kg of ${gp.needKg.toFixed(1)} kg to your goal (${gp.target} kg) · ${gp.pct}%</span></div>
+        <p class="help">${gp.mode === "now"
+          ? `Worked out from your current weight (${gp.current.toFixed(1)} kg): ${gp.leftKg.toFixed(1)} kg still to go. <button class="link-btn" data-action="progress-mode" data-mode="start">Measure from my start weight (${gp.start.toFixed(1)} kg) instead</button>`
+          : `Measured from your start weight (${gp.start.toFixed(1)} kg). <button class="link-btn" data-action="progress-mode" data-mode="now">Use my current weight instead</button>`}</p>`;
     })()}
     <p class="help">${r.days ? `Since ${fromIso(r.start).toLocaleDateString("en-GB", { day: "numeric", month: "long" })} · ${r.days} logged day${r.days === 1 ? "" : "s"}.` : "Fresh start! Counting begins with today, once it's over."} What your body used (upkeep + bonus) minus what you ate. Today counts once it's over; days you didn't log are skipped.</p>
     ${r.joined.map((d) => `<p class="help run-line">Joined across a break before ${fromIso(d).toLocaleDateString("en-GB", { day: "numeric", month: "short" })} · <button class="link-btn" data-action="run-split" data-date="${d}">Split here</button></p>`).join("")}
@@ -2293,6 +2303,9 @@ $app.addEventListener("click", async (ev) => {
   } else if (a === "level-snooze") {
     try { localStorage.setItem("munchkin.levelSnooze", shiftDate(iso(new Date()), 7)); } catch {}
     render();
+  } else if (a === "progress-mode") {
+    const mode = el.dataset.mode;
+    await saveRunsPrefs((P) => { P.progressMode = mode; });
   } else if (a === "run-join") {
     const d = el.dataset.date;
     const prevEnd = el.dataset.prev || "";
