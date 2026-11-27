@@ -1376,6 +1376,20 @@ function welcomeBackHTML() {
   return `<div class="notice soft welcome-back"><p><strong>Welcome back! 💜</strong> Keep counting from your last run (${before.net >= 0 ? "−" : "+"}${Math.abs(before.net).toLocaleString()} kcal), or start a new one?</p>
     <div class="btn-row"><button class="btn small" data-action="run-join" data-date="${r.start}">Keep counting</button><button class="btn ghost small" data-action="run-new" data-date="${r.start}">Start new</button></div></div>`;
 }
+// How far along the way to your goal weight the current run is: start = your weight trend when the run began
+function goalProgress() {
+  const runs = computeRuns();
+  const target = Number(state.goals?.profile?.goalWeight);
+  if (!runs.length || !(target > 30)) return null;
+  const r = runs[runs.length - 1];
+  const w = state.body?.weights || [];
+  const before = [...w].reverse().find((e) => e.date <= r.start);
+  const start = before ? before.trend : w.length ? w[0].trend : Number(state.goals.profile.weight);
+  const needKg = Math.round((start - target) * 10) / 10;
+  if (!(needKg > 0.2)) return null; // goal isn't a loss from where this run started
+  const lostKg = Math.max(0, r.net) / KCAL_PER_KG;
+  return { start, target, needKg, needKcal: Math.round(needKg * KCAL_PER_KG), lostKg, net: r.net, pct: Math.min(100, Math.round((lostKg / needKg) * 100)) };
+}
 function lostCardHTML() {
   const runs = computeRuns();
   if (!runs.length) return "";
@@ -1384,7 +1398,13 @@ function lostCardHTML() {
   return `<section class="card lost-card">
     <h2>📉 Lost so far</h2>
     ${welcomeBackHTML()}
-    <div class="lost-big"><strong>${lost ? "−" : "+"}${Math.abs(r.net).toLocaleString()} kcal</strong><span>≈ ${kgFat(r.net)} kg of fat ${lost ? "lost" : "gained"}</span></div>
+    ${(() => {
+      const gp = goalProgress();
+      if (!gp) return `<div class="lost-big"><strong>${lost ? "−" : "+"}${Math.abs(r.net).toLocaleString()} kcal</strong><span>≈ ${kgFat(r.net)} kg of fat ${lost ? "lost" : "gained"}</span></div>`;
+      return `<div class="lost-big"><strong>${lost ? "−" : "+"}${Math.abs(r.net).toLocaleString()} <small>/ −${gp.needKcal.toLocaleString()} kcal</small></strong>
+        <div class="goal-bar" role="progressbar" aria-valuenow="${gp.pct}" aria-valuemin="0" aria-valuemax="100"><span style="width:${gp.pct}%"></span></div>
+        <span>${gp.lostKg.toFixed(1)} kg of ${gp.needKg.toFixed(1)} kg to your goal (${gp.target} kg) · ${gp.pct}%</span></div>`;
+    })()}
     <p class="help">${r.days ? `Since ${fromIso(r.start).toLocaleDateString("en-GB", { day: "numeric", month: "long" })} · ${r.days} logged day${r.days === 1 ? "" : "s"}.` : "Fresh start! Counting begins with today, once it's over."} What your body used (upkeep + bonus) minus what you ate. Today counts once it's over; days you didn't log are skipped.</p>
     ${r.joined.map((d) => `<p class="help run-line">Joined across a break before ${fromIso(d).toLocaleDateString("en-GB", { day: "numeric", month: "short" })} · <button class="link-btn" data-action="run-split" data-date="${d}">Split here</button></p>`).join("")}
     ${earlier.length ? `<div class="runs-earlier"><small>Earlier</small>${earlier.map((e, i) => `<p class="run-line">${runRange(e)}: ${e.net >= 0 ? "−" : "+"}${Math.abs(e.net).toLocaleString()} kcal (≈ ${kgFat(e.net)} kg) ${i === 0 && e.end ? `<button class="link-btn" data-action="run-join" data-date="${runs[runs.length - 1].start}" data-prev="${e.end}">Join with the next</button>` : ""}</p>`).join("")}</div>` : ""}
@@ -1496,7 +1516,9 @@ function cycleNoteHTML() {
 }
 function tilesHTML() {
   const c = cycleCardHTML();
-  return `<div class="tiles ${c ? "two" : ""}">${bodyCardHTML()}${c}</div>${cycleNoteHTML()}`;
+  const gp = goalProgress();
+  const goalLine = gp ? `<button class="goal-line-today" data-action="body"><span>📉 ${gp.lostKg.toFixed(1)} / ${gp.needKg.toFixed(1)} kg to your goal</span><span class="goal-bar small"><span style="width:${gp.pct}%"></span></span></button>` : "";
+  return `<div class="tiles ${c ? "two" : ""}">${bodyCardHTML()}${c}</div>${goalLine}${cycleNoteHTML()}`;
 }
 function weightChartSVG(points, marks, from, to, proj = null) {
   const W = 340, H = 170, pl = 34, pr = 10, pt = 10, pb = 22;
